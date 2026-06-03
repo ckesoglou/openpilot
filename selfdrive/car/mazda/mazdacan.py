@@ -232,7 +232,7 @@ def create_acc_cmd(self, packer, values, hold, resume):
   msg_name = "ACC"
   bus = 2
 
-  if (values["ACC_ENABLED"]):
+  if (values["ACC_ENABLED"] and not values["SPEED_LIMITER_ACTIVE"]):
     values["HOLD"] = hold
     values["RESUME"] = resume
   else:
