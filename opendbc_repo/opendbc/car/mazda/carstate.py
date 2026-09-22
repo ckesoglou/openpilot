@@ -205,9 +205,15 @@ class CarState(CarStateBase):
     unit_conversion = CV.MPH_TO_MS if cp.vl["SYSTEM_SETTINGS"]["IMPERIAL_UNIT"] else CV.KPH_TO_MS
     ret.standstill = cp_cam.vl["SPEED"]["SPEED"] * unit_conversion < 0.1
     if self.CP.flags & MazdaSafetyFlags.GEN2:
+      # The adjustable speed limiter (ASL) is independent of MRCC. When ASL main is on,
+      # report cruise as available but non-adaptive: always-on lateral can engage, while
+      # nonAdaptive keeps openpilot longitudinal out (the limiter only caps the driver,
+      # it never applies acceleration of its own).
+      asl_main_on = bool(cp.vl["ACC_STATE"]["SPEED_LIMITER_MAIN"])
       ret.cruiseState.speed = cp.vl["CRUZE_STATE"]["CRZ_SPEED"] * unit_conversion
       ret.cruiseState.enabled = (cp.vl["CRUZE_STATE"]["CRZ_STATE"] >= 2)
-      ret.cruiseState.available = (cp.vl["CRUZE_STATE"]["CRZ_STATE"] != 0)
+      ret.cruiseState.available = (cp.vl["CRUZE_STATE"]["CRZ_STATE"] != 0) or asl_main_on
+      ret.cruiseState.nonAdaptive = asl_main_on and not ret.cruiseState.enabled
     else:
       ret.cruiseState.speed = cp_body.vl["CRUZE_STATE"]["CRZ_SPEED"] * unit_conversion
       ret.cruiseState.enabled = (cp_body.vl["CRUZE_STATE"]["CRZ_STATE"] >= 3)

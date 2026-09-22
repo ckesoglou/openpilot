@@ -210,7 +210,9 @@ def create_acc_cmd(packer, values, hold, resume):
   msg_name = "ACC"
   bus = 2
 
-  if (values["ACC_ENABLED"]):
+  # Don't drive HOLD/RESUME while the adjustable speed limiter is doing the limiting;
+  # the stock module owns the standstill state in that mode.
+  if (values["ACC_ENABLED"] and not values["SPEED_LIMITER_ACTIVE"]):
     values["HOLD"] = hold
     values["RESUME"] = resume
   else:
