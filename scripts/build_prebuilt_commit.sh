@@ -60,6 +60,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 step "Preflight checks"
 command -v git >/dev/null || die "git is not installed"
+command -v python3 >/dev/null || die "python3 is not installed"
 if command -v docker >/dev/null; then
   docker info >/dev/null 2>&1 || die "docker CLI found but no engine reachable (start Docker, or set DOCKER_HOST for Podman)"
 elif command -v podman >/dev/null; then
@@ -91,14 +92,28 @@ fi
 step "Building the arm64 builder container image"
 scripts/laptop_device_build.sh build-image
 
-if [[ -d .comma_sysroot/usr/include && -d .comma_sysroot/system/vendor/lib64 ]]; then
-  step "Reusing existing sysroot in .comma_sysroot"
-elif [[ -n "${COMMA_HOST}" ]]; then
-  step "Copying sysroot from comma at ${COMMA_HOST} over SSH"
-  scripts/laptop_device_build.sh setup-sysroot "${COMMA_HOST}" comma 22
+# The sysroot must match the AGNOS the comma runs. StarPilot ships a custom
+# AGNOS (for comma 3 support) listed in system/hardware/tici/agnos.json, so
+# re-extract whenever that manifest's system image changes. The extractor
+# caches the image under a fixed name, so drop that cache too.
+if [[ -n "${COMMA_HOST}" ]]; then
+  sysroot_source="device:${COMMA_HOST}"
 else
-  step "Extracting sysroot from the AGNOS system image (~4.7 GB download)"
-  scripts/laptop_device_build.sh setup-sysroot-agnos
+  sysroot_source="$(python3 -c 'import json; print(next(p["url"] for p in json.load(open("system/hardware/tici/agnos.json")) if p["name"] == "system"))')"
+fi
+if [[ -d .comma_sysroot/usr/include && -d .comma_sysroot/system/vendor/lib64 ]] \
+   && [[ "$(cat .comma_sysroot/.sysroot_source 2>/dev/null)" == "${sysroot_source}" ]]; then
+  step "Reusing existing sysroot in .comma_sysroot (${sysroot_source})"
+else
+  rm -rf .comma_sysroot .cache/agnos
+  if [[ -n "${COMMA_HOST}" ]]; then
+    step "Copying sysroot from comma at ${COMMA_HOST} over SSH (device must already be on AGNOS $(grep -o '"[0-9.]*"' launch_env.sh | head -1))"
+    scripts/laptop_device_build.sh setup-sysroot "${COMMA_HOST}" comma 22
+  else
+    step "Extracting sysroot from the AGNOS system image (~4.7 GB download): ${sysroot_source}"
+    scripts/laptop_device_build.sh setup-sysroot-agnos
+  fi
+  echo "${sysroot_source}" > .comma_sysroot/.sysroot_source
 fi
 
 step "Building device binaries (this takes a while)"
