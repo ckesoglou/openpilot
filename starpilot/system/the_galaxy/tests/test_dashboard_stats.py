@@ -31,7 +31,8 @@ sys.modules.setdefault("openpilot.system.loggerd.config", loggerd_config)
 loggerd_deleter = ModuleType("openpilot.system.loggerd.deleter")
 loggerd_deleter.PRESERVE_ATTR_NAME = "preserve"
 loggerd_deleter.PRESERVE_ATTR_VALUE = b"1"
-loggerd_deleter.PRESERVE_COUNT = 0
+loggerd_deleter.ROUTE_PRESERVE_ATTR_NAME = "preserve_route"
+loggerd_deleter.preserved_segment_nums = lambda seg_num: range(max(0, seg_num - 2), seg_num + 2)
 sys.modules.setdefault("openpilot.system.loggerd.deleter", loggerd_deleter)
 
 loggerd_uploader = ModuleType("openpilot.system.loggerd.uploader")
@@ -485,8 +486,8 @@ def test_route_inventory_counts_segments_without_video_probing(monkeypatch):
   monkeypatch.setattr(utilities, "get_all_segment_names", lambda _path: segments)
 
   assert utilities.get_routes_with_segment_details("/tmp/routes") == [
-    ("route-old", {"segmentCount": 1, "firstSegmentNum": 0}),
-    ("route-new", {"segmentCount": 3, "firstSegmentNum": 2}),
+    ("route-old", {"segmentCount": 1, "firstSegmentNum": 0, "segmentNums": [0]}),
+    ("route-new", {"segmentCount": 3, "firstSegmentNum": 2, "segmentNums": [2, 3, 4]}),
   ]
 
 

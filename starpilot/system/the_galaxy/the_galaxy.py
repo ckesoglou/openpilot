@@ -50,7 +50,7 @@ from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.pandad.panda_firmware import firmware_flags_conflict, supports_tesla_can_wake, validate_tesla_can_wake_firmware
 from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.hardware.hw import Paths
-from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE, PRESERVE_COUNT
+from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE, ROUTE_PRESERVE_ATTR_NAME
 from openpilot.system.version import get_build_metadata
 from openpilot.tools.longitudinal_maneuvers.capabilities import get_longitudinal_maneuver_support
 from panda import Panda
@@ -1392,11 +1392,14 @@ def _route_scan_entries(footage_paths):
       if name in seen_names:
         continue
       seen_names.add(name)
+      segment_count = max(0, int(details.get("segmentCount", 0)))
+      first_segment_num = max(0, int(details.get("firstSegmentNum", 0)))
       entries.append((
         footage_path,
         name,
-        max(0, int(details.get("segmentCount", 0))),
-        max(0, int(details.get("firstSegmentNum", 0))),
+        segment_count,
+        first_segment_num,
+        tuple(details.get("segmentNums") or range(first_segment_num, first_segment_num + segment_count)),
       ))
   return entries
 
@@ -1412,10 +1415,7 @@ def _route_metadata_events(entries, connect_dongle_id="", process_route=None):
   executor = ThreadPoolExecutor(max_workers=ROUTE_METADATA_WORKERS, thread_name_prefix="route-metadata")
   futures = []
   try:
-    futures = [
-      executor.submit(route_processor, path, name, segment_count, first_segment_num)
-      for path, name, segment_count, first_segment_num in entries
-    ]
+    futures = [executor.submit(route_processor, *entry) for entry in entries]
     batch = []
     for processed, future in enumerate(as_completed(futures), start=1):
       try:
@@ -1432,13 +1432,16 @@ def _route_metadata_events(entries, connect_dongle_id="", process_route=None):
     executor.shutdown(wait=False, cancel_futures=True)
 
 
-def _route_first_segment_path(name, footage_path):
-  """Oldest surviving segment of a route. loggerd ages out --0 first, so it is not always --0."""
-  try:
-    segments = utilities.get_segments_in_route(name, footage_path)
-  except OSError:
-    return None
-  return os.path.join(footage_path, segments[0]) if segments else None
+def _route_segment_paths(name, footage_paths=None):
+  """Every stored segment of a route across all footage roots."""
+  segment_paths = []
+  for footage_path in footage_paths if footage_paths is not None else FOOTAGE_PATHS:
+    try:
+      segments = utilities.get_segments_in_route(name, footage_path)
+    except OSError:
+      continue
+    segment_paths.extend(os.path.join(footage_path, segment) for segment in segments)
+  return segment_paths
 
 
 def _resolve_route_thumbnail(file_path, footage_paths=None):
@@ -7841,13 +7844,13 @@ def setup(app):
         for route_path in route_paths:
           _run_factory_reset_delete(route_path)
       else:
-        # The preserve xattr lives on one segment, but preservation applies to the
-        # whole route in every footage root.
+        # A heart or a bookmark on any segment keeps the whole route in every footage root.
         for route_path in route_paths:
           if not os.path.isdir(route_path):
             continue
           for segment in os.listdir(route_path):
-            if utilities.SEGMENT_RE.fullmatch(segment) and utilities.has_preserve_attr(os.path.join(route_path, segment)):
+            segment_path = os.path.join(route_path, segment)
+            if utilities.SEGMENT_RE.fullmatch(segment) and (utilities.has_route_preserve_attr(segment_path) or utilities.has_preserve_attr(segment_path)):
               preserved_route_names.add(segment.rsplit("--", 1)[0])
 
         for route_path in route_paths:
@@ -7875,7 +7878,7 @@ def setup(app):
         "message": (
           "All local driving routes deleted, including preserved routes. Saved personal records were kept."
           if include_preserved else
-          "All non-preserved local driving routes deleted. Preserved routes were kept."
+          "All non-preserved local driving routes deleted. Preserved and bookmarked routes were kept."
         ),
         "deletedPaths": len(route_paths) if include_preserved else 0,
         "deletedRoutes": len(deleted_route_names) if not include_preserved else None,
@@ -7892,36 +7895,50 @@ def setup(app):
     if not _valid_route_name(name):
       return jsonify({"error": "Invalid route name."}), 400
 
-    preserved_routes = set()
-    for footage_path in FOOTAGE_PATHS:
-      if not os.path.isdir(footage_path):
-        continue
-      for segment in os.listdir(footage_path):
-        if utilities.SEGMENT_RE.fullmatch(segment) and utilities.has_preserve_attr(os.path.join(footage_path, segment)):
-          preserved_routes.add(segment.rsplit("--", 1)[0])
-
-    if name not in preserved_routes and len(preserved_routes) >= PRESERVE_COUNT:
-      return {"error": f"Maximum of {PRESERVE_COUNT} preserved routes reached..."}, 400
-
-    for footage_path in FOOTAGE_PATHS:
-      segment_path = _route_first_segment_path(name, footage_path)
-      if segment_path is not None:
-        os.setxattr(segment_path, PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE)
-        return {"message": "Route preserved!!"}, 200
-
-    return {"error": "Route not found"}, 404
+    # Every segment carries the flag, so the route stays whole even if the deleter
+    # eventually has to take its oldest segments.
+    segment_paths = _route_segment_paths(name)
+    if not segment_paths:
+      return {"error": "Route not found"}, 404
+    try:
+      for segment_path in segment_paths:
+        os.setxattr(segment_path, ROUTE_PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE)
+    except OSError as error:
+      return {"error": f"Could not preserve route: {error}"}, 500
+    return {"message": "Route preserved!!"}, 200
 
   @app.route("/api/routes/<name>/preserve", methods=["DELETE"])
   def un_preserve_route(name):
     if not _valid_route_name(name):
       return jsonify({"error": "Invalid route name."}), 400
 
-    for footage_path in FOOTAGE_PATHS:
-      segment_path = _route_first_segment_path(name, footage_path)
-      if segment_path is not None and utilities.has_preserve_attr(segment_path):
+    # Only the heart comes off; bookmarks inside the route stay protected.
+    segment_paths = _route_segment_paths(name)
+    if not segment_paths:
+      return {"error": "Route not found"}, 404
+    try:
+      for segment_path in segment_paths:
+        if utilities.has_route_preserve_attr(segment_path):
+          os.removexattr(segment_path, ROUTE_PRESERVE_ATTR_NAME)
+    except OSError as error:
+      return {"error": f"Could not unpreserve route: {error}"}, 500
+    return {"message": "Route unpreserved!"}, 200
+
+  @app.route("/api/routes/<name>/bookmarks/<int:segment_num>", methods=["DELETE"])
+  def remove_route_bookmark(name, segment_num):
+    if not _valid_route_name(name):
+      return jsonify({"error": "Invalid route name."}), 400
+
+    segment_paths = [os.path.join(footage_path, f"{name}--{segment_num}") for footage_path in FOOTAGE_PATHS]
+    bookmarked_paths = [path for path in segment_paths if os.path.isdir(path) and utilities.has_preserve_attr(path)]
+    if not bookmarked_paths:
+      return {"error": "Bookmark not found"}, 404
+    try:
+      for segment_path in bookmarked_paths:
         os.removexattr(segment_path, PRESERVE_ATTR_NAME)
-        return {"message": "Route unpreserved!"}, 200
-    return {"error": "Route not found"}, 404
+    except OSError as error:
+      return {"error": f"Could not remove bookmark: {error}"}, 500
+    return {"message": "Bookmark removed!"}, 200
 
   @app.route("/video/<name>/combined", methods=["GET"])
   def get_combined_route_video(name):

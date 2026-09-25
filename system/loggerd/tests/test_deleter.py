@@ -7,6 +7,7 @@ from collections.abc import Sequence
 import openpilot.system.loggerd.deleter as deleter
 from openpilot.common.timeout import Timeout, TimeoutException
 from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
+from openpilot.system.loggerd.xattr_cache import setxattr
 
 Stats = namedtuple("Stats", ['f_bavail', 'f_blocks', 'f_frsize'])
 
@@ -72,18 +73,50 @@ class TestDeleter(UploaderTestCase):
     ])
 
   def test_delete_many_preserved(self):
+    # far more than five bookmarks, spaced so their windows don't touch: every one outlives ordinary footage
+    bookmarked = [
+      self.make_file_with_data(self.seg_format.format(i * 10), self.f_type, preserve_xattr=deleter.PRESERVE_ATTR_VALUE)
+      for i in range(8)
+    ]
     self.assertDeleteOrder([
-      self.make_file_with_data(self.seg_format.format(0), self.f_type),
-      self.make_file_with_data(self.seg_format.format(1), self.f_type, preserve_xattr=deleter.PRESERVE_ATTR_VALUE),
-      self.make_file_with_data(self.seg_format.format(2), self.f_type),
-    ] + [
-      self.make_file_with_data(self.seg_format2.format(i), self.f_type, preserve_xattr=deleter.PRESERVE_ATTR_VALUE)
-      for i in range(5)
-    ])
+      self.make_file_with_data(self.seg_format2.format(i), self.f_type)
+      for i in range(3)
+    ] + bookmarked)
+
+  def test_bookmark_keeps_two_before_and_one_after(self):
+    segments = [self.make_file_with_data(self.seg_format.format(i), self.f_type) for i in range(7)]
+    setxattr(str(segments[3].parent), deleter.PRESERVE_ATTR_NAME, deleter.PRESERVE_ATTR_VALUE)
+
+    self.assertDeleteOrder([segments[i] for i in (0, 5, 6, 1, 2, 3, 4)])
+
+  def test_route_preserve_keeps_every_segment_of_the_route(self):
+    preserved = [self.make_file_with_data(self.seg_format.format(i), self.f_type) for i in range(6)]
+    # flagging one segment is enough, so segments recorded after the flag are kept too
+    setxattr(str(preserved[0].parent), deleter.ROUTE_PRESERVE_ATTR_NAME, deleter.PRESERVE_ATTR_VALUE)
+
+    self.assertDeleteOrder([
+      self.make_file_with_data(self.seg_format2.format(i), self.f_type)
+      for i in range(2)
+    ] + preserved)
+
+  def test_preserved_segments_follow_flag_changes(self, monkeypatch):
+    flags = {}
+    monkeypatch.setattr(deleter, "getxattr", lambda path, name, refresh=False: flags.get((Path(path).name, name)))
+    dirs = [self.seg_format.format(i) for i in range(8)] + [self.seg_format2.format(0), "boot"]
+
+    flags[(dirs[5], deleter.PRESERVE_ATTR_NAME)] = deleter.PRESERVE_ATTR_VALUE
+    assert deleter.get_preserved_segments(dirs) == {self.seg_format.format(i) for i in (3, 4, 5, 6)}
+
+    flags.clear()
+    flags[(dirs[8], deleter.ROUTE_PRESERVE_ATTR_NAME)] = deleter.PRESERVE_ATTR_VALUE
+    assert deleter.get_preserved_segments(dirs) == {dirs[8]}
+
+    flags.clear()
+    assert deleter.get_preserved_segments(dirs) == set()
 
   def test_delete_last(self):
     self.assertDeleteOrder([
-      self.make_file_with_data(self.seg_format.format(1), self.f_type),
+      self.make_file_with_data(self.seg_format.format(2), self.f_type),
       self.make_file_with_data(self.seg_format2.format(0), self.f_type),
       self.make_file_with_data(self.seg_format.format(0), self.f_type, preserve_xattr=deleter.PRESERVE_ATTR_VALUE),
       self.make_file_with_data("boot", self.seg_format[:-4]),

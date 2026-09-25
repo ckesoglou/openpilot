@@ -13,35 +13,51 @@ MIN_PERCENT = 10
 
 DELETE_LAST = ['boot', 'crash']
 
+# set by loggerd on the segment a bookmark was pressed in
 PRESERVE_ATTR_NAME = 'user.preserve'
 PRESERVE_ATTR_VALUE = b'1'
-PRESERVE_COUNT = 5
+# set by The Galaxy on every segment of a route the user preserved
+ROUTE_PRESERVE_ATTR_NAME = 'user.preserve_route'
+
+# a bookmark keeps the segment it was pressed in, the two before it and the one after it
+PRESERVE_SEGMENTS_BEFORE = 2
+PRESERVE_SEGMENTS_AFTER = 1
+
+
+def has_xattr(d: str, attr_name: str) -> bool:
+  # read fresh on every pass, The Galaxy can add or clear flags while the deleter runs
+  return getxattr(os.path.join(Paths.log_root(), d), attr_name, refresh=True) == PRESERVE_ATTR_VALUE
 
 
 def has_preserve_xattr(d: str) -> bool:
-  return getxattr(os.path.join(Paths.log_root(), d), PRESERVE_ATTR_NAME) == PRESERVE_ATTR_VALUE
+  return has_xattr(d, PRESERVE_ATTR_NAME)
+
+
+def preserved_segment_nums(seg_num: int) -> range:
+  return range(max(0, seg_num - PRESERVE_SEGMENTS_BEFORE), seg_num + PRESERVE_SEGMENTS_AFTER + 1)
 
 
 def get_preserved_segments(dirs_by_creation: list[str]) -> set[str]:
-  # skip deleting most recent N preserved segments (and their prior segment)
+  # every bookmark window and preserved route is kept; they are deleted last, oldest first
   preserved = set()
-  for n, d in enumerate(filter(has_preserve_xattr, reversed(dirs_by_creation))):
-    if n == PRESERVE_COUNT:
-      break
-    date_str, _, seg_str = d.rpartition("--")
+  preserved_routes = set()
+  for d in dirs_by_creation:
+    route_name, _, seg_str = d.rpartition("--")
 
     # ignore non-segment directories
-    if not date_str:
+    if not route_name:
       continue
     try:
       seg_num = int(seg_str)
     except ValueError:
       continue
 
-    # preserve segment and two prior
-    for _seg_num in range(max(0, seg_num - 2), seg_num + 1):
-      preserved.add(f"{date_str}--{_seg_num}")
+    if has_preserve_xattr(d):
+      preserved.update(f"{route_name}--{n}" for n in preserved_segment_nums(seg_num))
+    if has_xattr(d, ROUTE_PRESERVE_ATTR_NAME):
+      preserved_routes.add(route_name)
 
+  preserved.update(d for d in dirs_by_creation if d.rpartition("--")[0] in preserved_routes)
   return preserved
 
 
