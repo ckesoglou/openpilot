@@ -25,6 +25,7 @@ class CarState(CarStateBase):
     self.params = CarControllerParams(CP)
 
     self.distance_button = 0
+    self.auto_high_beam_button = 0
     self.ti_ramp_down = False
     self.ti_version = 1
     self.ti_state = TI_STATE.RUN
@@ -222,6 +223,12 @@ class CarState(CarStateBase):
     ret.steeringRateDeg = (ret.steeringAngleDeg - self._prev_steering_angle) / DT_CTRL
     self._prev_steering_angle = ret.steeringAngleDeg
     ret.cruiseState.standstill = ret.standstill if not self.CP.openpilotLongitudinalControl else False
+
+    if self.CP.flags & MazdaSafetyFlags.GEN2:
+      # Expose the auto high beam button on the end of the turn stalk as a remappable LKAS button.
+      prev_auto_high_beam_button = self.auto_high_beam_button
+      self.auto_high_beam_button = cp.vl["BLINK_INFO"]["AUTO_HIGH_BEAM_BTN"]
+      ret.buttonEvents = create_button_events(self.auto_high_beam_button, prev_auto_high_beam_button, {1: ButtonType.lkas})
 
     self.cp = cp
     self.cp_cam = cp_cam
