@@ -37,10 +37,13 @@ def _is_unsupported_error(e: OSError) -> bool:
   unsupported_errnos = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.ENOSYS}
   return e.errno in unsupported_errnos
 
-def getxattr(path: str, attr_name: str) -> bytes | None:
+def getxattr(path: str, attr_name: str, refresh: bool = False) -> bytes | None:
   global _backend_disabled
 
   key = (path, attr_name)
+  # refresh re-reads a value another process may have changed; without a backend the cache is all there is
+  if refresh and not _backend_disabled:
+    _cached_attributes.pop(key, None)
   if key not in _cached_attributes:
     response: bytes | None = None
     try:

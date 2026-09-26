@@ -35,6 +35,22 @@ def _make_segment(root, route_name=ROUTE_NAME, segment_num=0):
   return segment
 
 
+def _fake_xattrs(monkeypatch, initial=None):
+  """In-memory xattrs keyed by path, shared by the_galaxy and utilities (one os module)."""
+  attributes = {str(path): set(names) for path, names in (initial or {}).items()}
+
+  def getxattr(path, name):
+    if name not in attributes.get(str(path), ()):
+      raise OSError(61, "No data available")
+    return the_galaxy.PRESERVE_ATTR_VALUE
+
+  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: sorted(attributes.get(str(path), ())), raising=False)
+  monkeypatch.setattr(the_galaxy.os, "getxattr", getxattr, raising=False)
+  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: attributes.setdefault(str(path), set()).add(name), raising=False)
+  monkeypatch.setattr(the_galaxy.os, "removexattr", lambda path, name: attributes[str(path)].remove(name), raising=False)
+  return attributes
+
+
 def _make_client(monkeypatch, root):
   assert the_galaxy._import_galaxy_web_symbols()
   monkeypatch.setattr(the_galaxy, "FOOTAGE_PATHS", [str(root) + "/"])
@@ -54,7 +70,8 @@ def test_process_route_is_metadata_only_and_retains_fields(monkeypatch, tmp_path
   (segment / "Morning school run").touch()
   started_at = datetime(2026, 8, 26, 15, 30, tzinfo=timezone.utc)
   monkeypatch.setattr(utilities, "get_route_start_time", lambda path: started_at)
-  monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: True)
+  monkeypatch.setattr(utilities, "has_route_preserve_attr", lambda path: True)
+  monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: path.endswith("--4"))
   monkeypatch.setattr(utilities, "video_to_png", lambda *args: (_ for _ in ()).throw(AssertionError("preview generation must stay lazy")))
 
   result = utilities.process_route(str(tmp_path), ROUTE_NAME, segment_count=4, first_segment_num=3)
@@ -66,6 +83,7 @@ def test_process_route_is_metadata_only_and_retains_fields(monkeypatch, tmp_path
     "startedAt": "2026-08-26T15:30:00Z",
     "isCustomName": True,
     "is_preserved": True,
+    "bookmarks": [{"segment": 4, "clipStart": 2, "clipEnd": 5}],
     "segmentCount": 4,
     "firstSegmentNum": 3,
     "approxDurationSeconds": 240,
@@ -88,10 +106,10 @@ def test_route_scan_deduplicates_using_footage_root_priority(monkeypatch):
   first = "/priority/"
   second = "/fallback/"
   details = {
-    first: [(ROUTE_NAME, {"segmentCount": 2, "firstSegmentNum": 1})],
+    first: [(ROUTE_NAME, {"segmentCount": 2, "firstSegmentNum": 1, "segmentNums": [1, 3]})],
     second: [
       (ROUTE_NAME, {"segmentCount": 8, "firstSegmentNum": 0}),
-      ("0000006b--9f0a7bdf9d", {"segmentCount": 1, "firstSegmentNum": 4}),
+      ("0000006b--9f0a7bdf9d", {"segmentCount": 2, "firstSegmentNum": 4}),
     ],
   }
   monkeypatch.setattr(utilities, "get_routes_with_segment_details", lambda path: details[path])
@@ -99,8 +117,34 @@ def test_route_scan_deduplicates_using_footage_root_priority(monkeypatch):
   entries = the_galaxy._route_scan_entries([first, second])
 
   assert entries == [
-    (first, ROUTE_NAME, 2, 1),
-    (second, "0000006b--9f0a7bdf9d", 1, 4),
+    (first, ROUTE_NAME, 2, 1, (1, 3)),
+    (second, "0000006b--9f0a7bdf9d", 2, 4, (4, 5)),
+  ]
+
+
+def test_route_segment_details_list_every_stored_segment_number(tmp_path):
+  for segment_num in (7, 2, 3):
+    _make_segment(tmp_path, segment_num=segment_num)
+
+  assert utilities.get_routes_with_segment_details(str(tmp_path)) == [
+    (ROUTE_NAME, {"segmentCount": 3, "firstSegmentNum": 2, "segmentNums": [2, 3, 7]}),
+  ]
+
+
+def test_process_route_reports_every_bookmark_and_a_heart_on_any_segment(tmp_path, monkeypatch):
+  segments = {num: _make_segment(tmp_path, segment_num=num) for num in (0, 1, 5, 9)}
+  _fake_xattrs(monkeypatch, {
+    segments[1]: {the_galaxy.PRESERVE_ATTR_NAME},
+    segments[5]: {the_galaxy.ROUTE_PRESERVE_ATTR_NAME, the_galaxy.PRESERVE_ATTR_NAME},
+  })
+
+  result = utilities.process_route(str(tmp_path), ROUTE_NAME, 4, 0, segment_nums=(0, 1, 5, 9))
+
+  assert result["is_preserved"] is True
+  # A bookmark near the start of a drive has fewer earlier segments to keep.
+  assert result["bookmarks"] == [
+    {"segment": 1, "clipStart": 0, "clipEnd": 2},
+    {"segment": 5, "clipStart": 3, "clipEnd": 6},
   ]
 
 
@@ -345,62 +389,70 @@ def test_rename_and_reset_keep_logs_and_use_both_reset_urls(monkeypatch, tmp_pat
 def test_preserve_unpreserve_and_delete_route_endpoints(monkeypatch, tmp_path):
   segment = _make_segment(tmp_path)
   client = _make_client(monkeypatch, tmp_path)
-  attributes = set()
+  attributes = _fake_xattrs(monkeypatch)
   deleted = []
-  monkeypatch.setattr(the_galaxy, "PRESERVE_COUNT", 10)
-  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: list(attributes), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "getxattr", lambda path, name: the_galaxy.PRESERVE_ATTR_VALUE, raising=False)
-  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: attributes.add(name), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "removexattr", lambda path, name: attributes.discard(name), raising=False)
   monkeypatch.setattr(the_galaxy, "delete_file", deleted.append)
 
   assert client.post(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert the_galaxy.PRESERVE_ATTR_NAME in attributes
+  assert attributes[str(segment)] == {the_galaxy.ROUTE_PRESERVE_ATTR_NAME}
   assert client.delete(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert the_galaxy.PRESERVE_ATTR_NAME not in attributes
+  assert attributes[str(segment)] == set()
   assert client.delete(f"/api/routes/{ROUTE_NAME}").status_code == 200
   assert deleted == [str(segment)]
 
 
-def test_preserve_follows_the_first_surviving_segment(monkeypatch, tmp_path):
-  segment = _make_segment(tmp_path, segment_num=3)  # --0 and --1 already aged out
+def test_preserve_flags_every_segment_and_unpreserve_keeps_bookmarks(monkeypatch, tmp_path):
+  segments = [_make_segment(tmp_path, segment_num=num) for num in (3, 4, 5)]  # --0 to --2 already aged out
   client = _make_client(monkeypatch, tmp_path)
-  attributes = {}
-  monkeypatch.setattr(the_galaxy, "PRESERVE_COUNT", 10)
-  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: list(attributes.get(str(path), ())), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "getxattr", lambda path, name: the_galaxy.PRESERVE_ATTR_VALUE, raising=False)
-  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: attributes.setdefault(str(path), set()).add(name), raising=False)
-  monkeypatch.setattr(the_galaxy.os, "removexattr", lambda path, name: attributes[str(path)].discard(name), raising=False)
+  attributes = _fake_xattrs(monkeypatch, {segments[1]: {the_galaxy.PRESERVE_ATTR_NAME}})
 
   assert client.post(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert attributes == {str(segment): {the_galaxy.PRESERVE_ATTR_NAME}}
-  assert utilities.process_route(str(tmp_path) + "/", ROUTE_NAME, 1, 3)["is_preserved"] is True
+  assert all(the_galaxy.ROUTE_PRESERVE_ATTR_NAME in attributes[str(segment)] for segment in segments)
+  route = utilities.process_route(str(tmp_path) + "/", ROUTE_NAME, 3, 3, segment_nums=(3, 4, 5))
+  assert route["is_preserved"] is True
+  assert [bookmark["segment"] for bookmark in route["bookmarks"]] == [4]
 
   assert client.delete(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert attributes[str(segment)] == set()
+  assert [attributes.get(str(segment), set()) for segment in segments] == [set(), {the_galaxy.PRESERVE_ATTR_NAME}, set()]
 
 
-def test_preserve_limit_counts_routes_not_segments(monkeypatch, tmp_path):
-  for segment_num in (5, 6, 7):
-    _make_segment(tmp_path, segment_num=segment_num)
+def test_preserve_has_no_route_limit(monkeypatch, tmp_path):
+  routes = [f"{index:08x}--9f0a7bdf9c" for index in range(8)]
+  for route_name in routes:
+    _make_segment(tmp_path, route_name)
   client = _make_client(monkeypatch, tmp_path)
-  monkeypatch.setattr(the_galaxy, "PRESERVE_COUNT", 1)
-  monkeypatch.setattr(the_galaxy.os, "listxattr", lambda path: [the_galaxy.PRESERVE_ATTR_NAME], raising=False)
-  monkeypatch.setattr(the_galaxy.os, "getxattr", lambda path, name: the_galaxy.PRESERVE_ATTR_VALUE, raising=False)
-  monkeypatch.setattr(the_galaxy.os, "setxattr", lambda path, name, value: None, raising=False)
+  _fake_xattrs(monkeypatch)
 
-  # Three preserved segments belong to one route, so the cap of 1 is not already spent on it.
-  assert client.post(f"/api/routes/{ROUTE_NAME}/preserve").status_code == 200
-  assert client.post("/api/routes/00000099--9f0a7bdf9c/preserve").status_code == 400
+  assert all(client.post(f"/api/routes/{route_name}/preserve").status_code == 200 for route_name in routes)
+  assert client.post("/api/routes/00000099--9f0a7bdf9c/preserve").status_code == 404
+
+
+def test_remove_bookmark_clears_only_that_segment(monkeypatch, tmp_path):
+  bookmarked = _make_segment(tmp_path, segment_num=2)
+  other = _make_segment(tmp_path, segment_num=6)
+  client = _make_client(monkeypatch, tmp_path)
+  attributes = _fake_xattrs(monkeypatch, {
+    bookmarked: {the_galaxy.PRESERVE_ATTR_NAME, the_galaxy.ROUTE_PRESERVE_ATTR_NAME},
+    other: {the_galaxy.PRESERVE_ATTR_NAME},
+  })
+
+  assert client.delete(f"/api/routes/{ROUTE_NAME}/bookmarks/2").status_code == 200
+  assert attributes[str(bookmarked)] == {the_galaxy.ROUTE_PRESERVE_ATTR_NAME}
+  assert attributes[str(other)] == {the_galaxy.PRESERVE_ATTR_NAME}
+  assert client.delete(f"/api/routes/{ROUTE_NAME}/bookmarks/2").status_code == 404
+  assert client.delete(f"/api/routes/{ROUTE_NAME}/bookmarks/3").status_code == 404
 
 
 def test_delete_all_non_preserved_keeps_entire_preserved_route_across_roots(monkeypatch, tmp_path):
   standard = tmp_path / "standard"
   high_resolution = tmp_path / "high_resolution"
   preserved_route = ROUTE_NAME
+  bookmarked_route = "0000006c--9f0a7bdf9e"
   ordinary_route = "0000006b--9f0a7bdf9d"
   preserved_marker = _make_segment(standard, preserved_route, 3)
   preserved_other_root = _make_segment(high_resolution, preserved_route, 4)
+  bookmark_marker = _make_segment(standard, bookmarked_route, 7)
+  bookmarked_other_segment = _make_segment(standard, bookmarked_route, 0)
   ordinary_standard = _make_segment(standard, ordinary_route, 0)
   ordinary_other_root = _make_segment(high_resolution, ordinary_route, 1)
   unrelated = high_resolution / "video_cache"
@@ -408,7 +460,8 @@ def test_delete_all_non_preserved_keeps_entire_preserved_route_across_roots(monk
 
   client = _make_client(monkeypatch, standard)
   monkeypatch.setattr(the_galaxy, "FOOTAGE_PATHS", [str(standard), str(high_resolution)])
-  monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: path == str(preserved_marker))
+  monkeypatch.setattr(utilities, "has_route_preserve_attr", lambda path: path == str(preserved_marker))
+  monkeypatch.setattr(utilities, "has_preserve_attr", lambda path: path == str(bookmark_marker))
   monkeypatch.setattr(utilities, "stop_dashboard_background_analysis", lambda: None)
   monkeypatch.setattr(the_galaxy, "delete_file", lambda path: Path(path).rmdir())
   history_calls = []
@@ -420,13 +473,15 @@ def test_delete_all_non_preserved_keeps_entire_preserved_route_across_roots(monk
 
   assert response.status_code == 200
   assert response.get_json()["deletedRoutes"] == 1
-  assert response.get_json()["preservedRoutes"] == 1
+  assert response.get_json()["preservedRoutes"] == 2
   assert preserved_marker.is_dir()
   assert preserved_other_root.is_dir()
+  assert bookmark_marker.is_dir()
+  assert bookmarked_other_segment.is_dir()
   assert not ordinary_standard.exists()
   assert not ordinary_other_root.exists()
   assert unrelated.is_dir()
-  assert history_calls == [{preserved_route}]
+  assert history_calls == [{preserved_route, bookmarked_route}]
   assert factory_delete_calls == []
 
 
@@ -576,6 +631,7 @@ def test_route_endpoints_reject_invalid_names(monkeypatch, tmp_path):
     (client.delete, "/api/routes/not-a-route"),
     (client.post, "/api/routes/not-a-route/preserve"),
     (client.delete, "/api/routes/not-a-route/preserve"),
+    (client.delete, "/api/routes/not-a-route/bookmarks/1"),
     (client.get, "/api/routes/not-a-route"),
     (client.get, "/video/not-a-route/combined"),
   ):

@@ -26,7 +26,7 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.loggerd.config import get_available_bytes, get_used_bytes
-from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE
+from openpilot.system.loggerd.deleter import PRESERVE_ATTR_NAME, PRESERVE_ATTR_VALUE, ROUTE_PRESERVE_ATTR_NAME, preserved_segment_nums
 from openpilot.system.loggerd.uploader import listdir_by_creation
 from openpilot.tools.lib.route import SegmentName
 
@@ -3223,9 +3223,12 @@ def get_routes_with_segment_details(footage_path):
   for segment in get_all_segment_names(footage_path):
     route_name = segment.route_name.time_str
     segment_num = int(getattr(segment, "segment_num", 0))
-    details = route_details.setdefault(route_name, {"segmentCount": 0, "firstSegmentNum": segment_num})
+    details = route_details.setdefault(route_name, {"segmentCount": 0, "firstSegmentNum": segment_num, "segmentNums": []})
     details["segmentCount"] += 1
     details["firstSegmentNum"] = min(details["firstSegmentNum"], segment_num)
+    details["segmentNums"].append(segment_num)
+  for details in route_details.values():
+    details["segmentNums"].sort()
   return sorted(route_details.items(), reverse=True)
 
 def get_segments_in_route(route_time_str, footage_path):
@@ -3246,11 +3249,23 @@ def get_video_duration(input_path):
   except (ValueError, subprocess.CalledProcessError):
     return 60
 
-def has_preserve_attr(path: str):
+def _has_flag_attr(path: str, attr_name: str):
   try:
-    return PRESERVE_ATTR_NAME in os.listxattr(path) and os.getxattr(path, PRESERVE_ATTR_NAME) == PRESERVE_ATTR_VALUE
+    return attr_name in os.listxattr(path) and os.getxattr(path, attr_name) == PRESERVE_ATTR_VALUE
   except (AttributeError, OSError):
     return False
+
+def has_preserve_attr(path: str):
+  """loggerd's bookmark flag, set on the segment the bookmark was pressed in."""
+  return _has_flag_attr(path, PRESERVE_ATTR_NAME)
+
+def has_route_preserve_attr(path: str):
+  """The heart: set on every segment of a preserved route."""
+  return _has_flag_attr(path, ROUTE_PRESERVE_ATTR_NAME)
+
+def route_bookmark(segment_num: int):
+  clip = preserved_segment_nums(segment_num)
+  return {"segment": segment_num, "clipStart": clip.start, "clipEnd": clip.stop - 1}
 
 def list_file(path):
   return sorted(os.listdir(path), reverse=True)
@@ -3277,9 +3292,13 @@ def _utc_rfc3339(value):
   # Naive values come off the filesystem in local time; astimezone reads them that way.
   return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
-def process_route(footage_path, route_name, segment_count=0, first_segment_num=0):
-  segment_name = f"{route_name}--{max(0, int(first_segment_num))}"
+def process_route(footage_path, route_name, segment_count=0, first_segment_num=0, segment_nums=None):
+  first_segment_num = max(0, int(first_segment_num))
+  segment_name = f"{route_name}--{first_segment_num}"
   segment_path = os.path.join(footage_path, segment_name)
+  if segment_nums is None:
+    segment_nums = range(first_segment_num, first_segment_num + max(0, int(segment_count)))
+  segment_paths = [(num, os.path.join(footage_path, f"{route_name}--{num}")) for num in segment_nums]
   custom_name = None
   if os.path.isdir(segment_path):
     for item in os.listdir(segment_path):
@@ -3296,9 +3315,10 @@ def process_route(footage_path, route_name, segment_count=0, first_segment_num=0
     "timestamp": route_timestamp_str,
     "startedAt": _utc_rfc3339(route_timestamp_dt),
     "isCustomName": custom_name is not None,
-    "is_preserved": has_preserve_attr(segment_path),
+    "is_preserved": any(has_route_preserve_attr(path) for _, path in segment_paths),
+    "bookmarks": [route_bookmark(num) for num, path in segment_paths if has_preserve_attr(path)],
     "segmentCount": max(0, int(segment_count)),
-    "firstSegmentNum": max(0, int(first_segment_num)),
+    "firstSegmentNum": first_segment_num,
     "approxDurationSeconds": max(0, int(segment_count)) * 60,
   }
 

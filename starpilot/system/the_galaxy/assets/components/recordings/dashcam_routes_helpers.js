@@ -1,4 +1,5 @@
 export const MAX_RENDERED_ROUTES = 250
+const SEGMENT_MS = 60 * 1000
 const SEARCH_MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
 
 function validDate(value) {
@@ -50,6 +51,7 @@ export function normalizeRoute(route, locale) {
   return {
     ...route,
     name: String(route?.name || ""),
+    bookmarks: normalizeBookmarks(route?.bookmarks),
     timestamp,
     startedAt: route?.startedAt || null,
     isCustomName,
@@ -65,6 +67,18 @@ export function normalizeRoute(route, locale) {
   }
 }
 
+function normalizeBookmarks(bookmarks) {
+  if (!Array.isArray(bookmarks)) return []
+  return bookmarks
+    .filter(bookmark => Number.isSafeInteger(bookmark?.segment) && bookmark.segment >= 0)
+    .map(bookmark => ({
+      segment: bookmark.segment,
+      clipStart: Number.isSafeInteger(bookmark.clipStart) ? bookmark.clipStart : bookmark.segment,
+      clipEnd: Number.isSafeInteger(bookmark.clipEnd) ? bookmark.clipEnd : bookmark.segment,
+    }))
+    .sort((left, right) => left.segment - right.segment)
+}
+
 export function formatTotalDuration(seconds) {
   const totalMinutes = Math.max(0, Math.round(Number(seconds) / 60) || 0)
   if (totalMinutes < 1) return "0 min"
@@ -78,6 +92,7 @@ export function computeRouteStats(routes = []) {
   const list = Array.isArray(routes) ? routes : []
   let totalDurationSeconds = 0
   let preservedCount = 0
+  let bookmarkCount = 0
   let totalSegments = 0
 
   for (const route of list) {
@@ -87,6 +102,9 @@ export function computeRouteStats(routes = []) {
       }
       if (route.is_preserved) {
         preservedCount += 1
+      }
+      if (Array.isArray(route.bookmarks)) {
+        bookmarkCount += route.bookmarks.length
       }
       if (Number.isFinite(route.segmentCount)) {
         totalSegments += Math.max(0, route.segmentCount)
@@ -99,6 +117,7 @@ export function computeRouteStats(routes = []) {
     totalDurationSeconds,
     formattedDuration: formatTotalDuration(totalDurationSeconds),
     preservedCount,
+    bookmarkCount,
     totalSegments,
   }
 }
@@ -179,6 +198,45 @@ export function buildRouteView(routes, options = {}) {
   }
 }
 
+// One clip per bookmark, newest first unless the viewer asked for oldest.
+export function buildBookmarkClipView(routes, options = {}) {
+  const clips = []
+  for (const route of routes) {
+    if (!route?.bookmarks?.length || !routeMatchesSearch(route, options.searchQuery)) continue
+    for (const bookmark of route.bookmarks) {
+      // A route's start time comes from its oldest stored segment, so offset from that.
+      const offset = Math.max(0, bookmark.segment - (Number(route.firstSegmentNum) || 0))
+      clips.push({
+        ...bookmark,
+        name: `${route.name}--${bookmark.segment}`,
+        route,
+        png: `/thumbnails/${route.name}--${bookmark.segment}/preview.png`,
+        _startedAtMs: route._startedAtMs == null ? null : route._startedAtMs + offset * SEGMENT_MS,
+      })
+    }
+  }
+  const matching = sortRoutes(clips, options.sortOrder === "oldest" ? "oldest" : "newest")
+  return {
+    matching,
+    visible: matching.slice(0, MAX_RENDERED_ROUTES),
+    truncated: matching.length > MAX_RENDERED_ROUTES,
+  }
+}
+
+export function formatClipTime(clip, locale) {
+  if (clip?._startedAtMs == null) return `Segment ${clip?.segment ?? "?"}`
+  const time = new Intl.DateTimeFormat(locale, { hour: "numeric", minute: "2-digit" }).format(new Date(clip._startedAtMs))
+  return `About ${time}`
+}
+
+// Index of the first stored segment at or after the requested one, so a clip whose
+// earliest segments were deleted still opens as close to the bookmark as possible.
+export function segmentIndexAtOrAfter(segmentUrls, segmentNumber) {
+  if (!Array.isArray(segmentUrls) || !Number.isSafeInteger(segmentNumber)) return 0
+  const index = segmentUrls.findIndex(url => (parseStoredSegmentNumber(url) ?? -1) >= segmentNumber)
+  return index === -1 ? Math.max(0, segmentUrls.length - 1) : index
+}
+
 export function routeViewRenderKey(routes, sortOrder = "newest", viewMode = "list") {
   const routeNames = Array.isArray(routes) ? routes.map(route => String(route?.name || "")).join(",") : ""
   return `${viewMode}:${sortOrder}:${routeNames}`
@@ -250,12 +308,16 @@ export function getSegmentStatus(segmentUrls, playbackIndex) {
   return `Segment ${segmentNumber}`
 }
 
-export function getSegmentOptions(segmentUrls) {
+export function getSegmentOptions(segmentUrls, bookmarkedSegments = []) {
   if (!Array.isArray(segmentUrls)) return []
-  return segmentUrls.map((_, index) => ({
-    index,
-    label: getSegmentStatus(segmentUrls, index) || `Clip ${index + 1}`,
-  }))
+  const bookmarked = new Set(Array.isArray(bookmarkedSegments) ? bookmarkedSegments : [])
+  return segmentUrls.map((url, index) => {
+    const label = getSegmentStatus(segmentUrls, index) || `Clip ${index + 1}`
+    return {
+      index,
+      label: bookmarked.has(parseStoredSegmentNumber(url)) ? `${label} \u00b7 Bookmark` : label,
+    }
+  })
 }
 
 export function cameraVideoUrl(segmentUrl, camera, quality) {

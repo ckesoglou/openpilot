@@ -424,3 +424,83 @@ def test_switching_camera_changes_only_the_url_and_not_segment_status():
 
   assert result["url"] == "/video/0000006a--9f0a7bdf9c--7?camera=driver"
   assert result["unchanged"] is True
+
+
+def test_segment_options_mark_bookmarked_segments():
+  options = evaluate("""
+    return getSegmentOptions([
+      "/video/0000006a--9f0a7bdf9c--12",
+      "/video/0000006a--9f0a7bdf9c--13",
+    ], [13])
+  """)
+
+  assert [option["label"] for option in options] == ["Segment 12", "Segment 13 · Bookmark"]
+
+
+def test_bookmark_clips_flatten_every_bookmark_newest_first_and_follow_search():
+  view = evaluate('''
+    const morning = route("0000006a--9f0a7bdf9c", "2026-09-20T08:00:00Z", {
+      firstSegmentNum: 2,
+      bookmarks: [{ segment: 3, clipStart: 1, clipEnd: 4 }, { segment: 12, clipStart: 10, clipEnd: 13 }],
+    })
+    const evening = route("0000006b--9f0a7bdf9d", "2026-09-21T18:00:00Z", {
+      timestamp: "Coast road", isCustomName: true,
+      bookmarks: [{ segment: 0, clipStart: 0, clipEnd: 1 }],
+    })
+    const plain = route("0000006c--9f0a7bdf9e", "2026-09-22T09:00:00Z")
+    const clips = view => view.visible.map(clip => [clip.name, clip.clipStart, clip.png, new Date(clip._startedAtMs).toISOString()])
+    return {
+      newest: clips(buildBookmarkClipView([morning, evening, plain])),
+      oldest: buildBookmarkClipView([morning, evening], { sortOrder: "oldest" }).visible.map(clip => clip.name),
+      searched: buildBookmarkClipView([morning, evening], { searchQuery: "coast" }).visible.map(clip => clip.name),
+      stats: computeRouteStats([morning, evening, plain]).bookmarkCount,
+    }
+  ''')
+
+  assert view["newest"] == [
+    ["0000006b--9f0a7bdf9d--0", 0, "/thumbnails/0000006b--9f0a7bdf9d--0/preview.png", "2026-09-21T18:00:00.000Z"],
+    # Offsets count from the oldest stored segment, which the route start time comes from.
+    ["0000006a--9f0a7bdf9c--12", 10, "/thumbnails/0000006a--9f0a7bdf9c--12/preview.png", "2026-09-20T08:10:00.000Z"],
+    ["0000006a--9f0a7bdf9c--3", 1, "/thumbnails/0000006a--9f0a7bdf9c--3/preview.png", "2026-09-20T08:01:00.000Z"],
+  ]
+  assert view["oldest"] == ["0000006a--9f0a7bdf9c--3", "0000006a--9f0a7bdf9c--12", "0000006b--9f0a7bdf9d--0"]
+  assert view["searched"] == ["0000006b--9f0a7bdf9d--0"]
+  assert view["stats"] == 3
+
+
+def test_normalize_route_drops_malformed_bookmarks():
+  bookmarks = evaluate('''
+    return route("0000006a--9f0a7bdf9c", "2026-09-20T08:00:00Z", {
+      bookmarks: [{ segment: 9, clipStart: 7, clipEnd: 10 }, { segment: -1 }, { segment: "4" }, null, { segment: 2 }],
+    }).bookmarks
+  ''')
+
+  assert bookmarks == [
+    {"segment": 2, "clipStart": 2, "clipEnd": 2},
+    {"segment": 9, "clipStart": 7, "clipEnd": 10},
+  ]
+
+
+def test_clips_open_at_the_first_stored_segment_of_their_window():
+  indexes = evaluate('''
+    const segments = [4, 5, 8, 9].map(num => `/video/0000006a--9f0a7bdf9c--${num}`)
+    return [
+      segmentIndexAtOrAfter(segments, 5),
+      // --6 and --7 were deleted, so the clip opens on the next stored segment.
+      segmentIndexAtOrAfter(segments, 6),
+      segmentIndexAtOrAfter(segments, 0),
+      segmentIndexAtOrAfter(segments, 20),
+      segmentIndexAtOrAfter(undefined, 3),
+    ]
+  ''')
+
+  assert indexes == [1, 2, 0, 3, 0]
+
+
+def test_bookmarks_tab_renders_clips_and_opens_them_at_the_clip_start():
+  source = COMPONENT_PATH.read_text(encoding="utf-8")
+
+  assert 'state.routeFilter = "bookmarks"' in source
+  assert 'if (state.routeFilter === "bookmarks") return BookmarkClips()' in source
+  assert "state.selectedStartSegment = clip.clipStart" in source
+  assert "openOverlay(state.selectedRoute, state.selectedStartSegment)" in source

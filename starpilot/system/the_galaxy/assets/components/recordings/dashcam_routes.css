@@ -513,6 +513,10 @@
   color: #ef6078;
 }
 
+.dashcam-stat-chip.stat-chip-bookmarks i {
+  color: #e0a526;
+}
+
 .dashcam-header-controls {
   display: flex;
   align-items: center;
@@ -636,6 +640,11 @@
 
 .dashcam-filter-pill .bi-heart-fill {
   color: #ef6078;
+  margin-right: 0.25rem;
+}
+
+.dashcam-filter-pill .bi-bookmark-fill {
+  color: #e0a526;
   margin-right: 0.25rem;
 }
 
@@ -911,6 +920,12 @@
   background: rgba(239, 96, 120, 0.12);
   border-color: rgba(239, 96, 120, 0.35);
   color: #ef6078;
+}
+
+.meta-pill.bookmark-pill {
+  background: rgba(224, 165, 38, 0.12);
+  border-color: rgba(224, 165, 38, 0.35);
+  color: #e0a526;
 }
 
 .meta-pill.id-pill {
@@ -1471,6 +1486,14 @@
   .dashcam-sort,
   .dashcam-view-toggle {
     justify-content: center;
+  }
+
+  /* Three filters share the row instead of pushing past the card edge. */
+  .dashcam-filter-pill {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0.5rem 0.35rem;
+    white-space: nowrap;
   }
 
   .dashcam-sort {

@@ -2,10 +2,12 @@ import { html, reactive } from "/assets/vendor/arrow-core.js"
 import { escapeHtml, isGalaxyTunnel } from "/assets/js/utils.js"
 import { Modal } from "/assets/components/modal.js"
 import {
+  buildBookmarkClipView,
   buildRouteView,
   cameraVideoUrl,
   computeRouteStats,
   formatApproxDuration,
+  formatClipTime,
   getSegmentOptions,
   shouldUpgradeFromHeight,
   supportsLowQuality,
@@ -14,6 +16,7 @@ import {
   normalizeRoute,
   routeMetadataErrorMessage,
   routeViewRenderKey,
+  segmentIndexAtOrAfter,
 } from "/assets/components/recordings/dashcam_routes_helpers.js"
 
 const state = reactive({
@@ -21,9 +24,11 @@ const state = reactive({
   error: null,
   routes: [],
   selectedRoute: null,
+  // First segment to play when the player opens on a bookmarked clip.
+  selectedStartSegment: null,
   searchQuery: "",
   sortOrder: "newest",
-  showPreservedOnly: false,
+  routeFilter: "all",
   viewMode: "list",
   progress: 0,
   total: 0,
@@ -297,7 +302,7 @@ function openLogsFromRow(route, event) {
   )
 }
 
-async function openOverlay(route) {
+async function openOverlay(route, startSegment = null) {
   if (overlay) return
   overlay = document.createElement("div")
   overlay.className = "media-player-overlay dashcam-player-overlay"
@@ -373,7 +378,8 @@ async function openOverlay(route) {
     nextSegmentButton.disabled = current >= segments.length - 1
   }
   const buildSegmentPicker = () => {
-    segmentSelect.innerHTML = getSegmentOptions(segments)
+    const bookmarkedSegments = (state.selectedRoute || route).bookmarks?.map(bookmark => bookmark.segment) || []
+    segmentSelect.innerHTML = getSegmentOptions(segments, bookmarkedSegments)
       .map(option => `<option value="${option.index}">${escapeHtml(option.label)}</option>`)
       .join("")
     segmentBar.hidden = !segments.length
@@ -731,6 +737,7 @@ async function openOverlay(route) {
       button.classList.toggle("active", button.dataset.camera === selectedCamera)
     }
     downloadButton.disabled = false
+    current = startSegment == null ? 0 : segmentIndexAtOrAfter(segments, startSegment)
     buildSegmentPicker()
     playCurrentSegment()
   } catch (error) {
@@ -751,7 +758,35 @@ function closeOverlay() {
   })
   overlay.remove()
   overlay = null
+  state.selectedStartSegment = null
   state.selectedRoute = null
+}
+
+function openClip(clip) {
+  // Set before the route so the render that opens the player sees it.
+  state.selectedStartSegment = clip.clipStart
+  state.selectedRoute = clip.route
+}
+
+async function removeBookmark(clip, event) {
+  event?.stopPropagation?.()
+  try {
+    const response = await fetch(`/api/routes/${clip.route.name}/bookmarks/${clip.segment}`, { method: "DELETE" })
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      showSnackbar(errorData.error || "Failed to remove bookmark...", "error")
+      return
+    }
+    replaceRoute({ ...clip.route, bookmarks: clip.route.bookmarks.filter(bookmark => bookmark.segment !== clip.segment) })
+    showSnackbar("Bookmark removed. Its footage can now be cleaned up when storage runs low.")
+  } catch (_) {
+    showSnackbar("An error occurred...", "error")
+  }
+}
+
+function bookmarkCountLabel(route) {
+  const count = route.bookmarks?.length || 0
+  return `${count} bookmark${count === 1 ? "" : "s"}`
 }
 
 async function togglePreserved(route, event) {
@@ -791,6 +826,58 @@ function thumbnailFailed(event) {
   event.currentTarget.parentElement?.classList.add("thumbnail-failed")
 }
 
+function BookmarkClips() {
+  const view = buildBookmarkClipView(state.routes, { searchQuery: state.searchQuery, sortOrder: state.sortOrder })
+  // Clips are all about the same length, so they always group by day.
+  const groups = groupRoutesForView(view.visible)
+  const renderKey = `bookmarks:${routeViewRenderKey(view.visible, state.sortOrder, state.viewMode)}`
+  const clipLength = clip => formatApproxDuration((clip.clipEnd - clip.clipStart + 1) * 60)
+
+  return html`
+    ${state.error ? html`<p class="screen-recordings-message dashcam-error">${state.error}</p>` : ""}
+    ${!view.visible.length && state.loading ? html`<div class="dashcam-loading"><span></span><p>Finding bookmarked clips&hellip;</p></div>` : ""}
+    ${!view.visible.length && !state.loading ? html`<div class="dashcam-empty-state"><i class="bi bi-bookmark"></i><p>${state.searchQuery.trim() ? "No bookmarked clips match this search." : "No bookmarked clips yet. Press your bookmark button while driving to keep the moment."}</p></div>` : ""}
+    <div class="dashcam-date-groups" data-view-key="${renderKey}">
+      ${groups.map(group => html`
+        <section class="dashcam-date-group">
+          <div class="dashcam-date-group-header">
+            <h2>${group.label}</h2>
+            <span class="dashcam-date-group-count">${group.routes.length} ${group.routes.length === 1 ? "clip" : "clips"}</span>
+          </div>
+          <div class="dashcam-routes-list">
+            ${group.routes.map(clip => html`
+              <article class="dashcam-route-row dashcam-clip-row" @click="${() => openClip(clip)}">
+                <div class="dashcam-mini-preview">
+                  <span class="dashcam-mini-fallback"><i class="bi bi-camera-video"></i></span>
+                  <img src="${clip.png}" class="dashcam-mini-img" loading="lazy" alt="" @error="${thumbnailFailed}">
+                  <span class="dashcam-mini-play-overlay"><i class="bi bi-play-fill"></i></span>
+                </div>
+                <div class="dashcam-route-info">
+                  <div class="dashcam-route-title-row">
+                    <h3 class="dashcam-route-title" title="${() => clip.route.displayName}">${formatClipTime(clip)}</h3>
+                  </div>
+                  <p class="dashcam-route-subdate"><i class="bi bi-car-front"></i> ${() => clip.route.displayName}</p>
+                  <div class="dashcam-route-meta-pills">
+                    <span class="meta-pill bookmark-pill" title="Segment the bookmark was pressed in"><i class="bi bi-bookmark-fill"></i> Segment ${clip.segment}</span>
+                    <span class="meta-pill duration-pill" title="Kept from segment ${clip.clipStart} to ${clip.clipEnd}"><i class="bi bi-clock"></i> ${clipLength(clip)}</span>
+                    ${() => clip.route.is_preserved ? html`<span class="meta-pill preserved-pill" title="The whole drive is preserved"><i class="bi bi-heart-fill"></i> Preserved</span>` : ""}
+                  </div>
+                </div>
+                <div class="dashcam-route-actions" @click="${event => event.stopPropagation()}">
+                  <button class="btn-route-action btn-play" type="button" title="Play clip" @click="${() => openClip(clip)}">
+                    <i class="bi bi-play-fill"></i> <span>Play</span>
+                  </button>
+                  <button class="btn-route-action btn-icon" type="button" title="Remove bookmark" aria-label="Remove bookmark" @click="${event => removeBookmark(clip, event)}">
+                    <i class="bi bi-bookmark-x"></i>
+                  </button>
+                </div>
+              </article>`.key(clip.name))}
+          </div>
+        </section>`.key(group.key))}
+    </div>
+    ${view.truncated ? html`<p class="screen-recordings-message">Showing the first ${MAX_RENDERED_ROUTES} of ${view.matching.length} bookmarked clips.</p>` : ""}`
+}
+
 export function RouteRecordings() {
   if (isGalaxyTunnel()) {
     return html`
@@ -801,7 +888,7 @@ export function RouteRecordings() {
       </div>`
   }
 
-  if (state.selectedRoute && !overlay) openOverlay(state.selectedRoute)
+  if (state.selectedRoute && !overlay) openOverlay(state.selectedRoute, state.selectedStartSegment)
 
   return html`
     <div class="screen-recordings-wrapper dashcam-routes-wrapper">
@@ -812,7 +899,7 @@ export function RouteRecordings() {
             <h1>Dashcam Routes</h1>
             ${() => {
               const stats = computeRouteStats(state.routes)
-              return html`<div class="dashcam-stats-bar"><span class="dashcam-stat-chip"><i class="bi bi-car-front-fill"></i> <strong>${stats.count}</strong> ${stats.count === 1 ? "drive" : "drives"}</span><span class="dashcam-stat-chip"><i class="bi bi-stopwatch-fill"></i> <strong>${stats.formattedDuration}</strong> total</span>${stats.preservedCount > 0 ? html`<span class="dashcam-stat-chip stat-chip-preserved"><i class="bi bi-heart-fill"></i> <strong>${stats.preservedCount}</strong> preserved</span>` : ""}</div>`
+              return html`<div class="dashcam-stats-bar" data-stats-key="${`${stats.count}:${stats.preservedCount}:${stats.bookmarkCount}`}"><span class="dashcam-stat-chip"><i class="bi bi-car-front-fill"></i> <strong>${stats.count}</strong> ${stats.count === 1 ? "drive" : "drives"}</span><span class="dashcam-stat-chip"><i class="bi bi-stopwatch-fill"></i> <strong>${stats.formattedDuration}</strong> total</span>${stats.preservedCount > 0 ? html`<span class="dashcam-stat-chip stat-chip-preserved"><i class="bi bi-heart-fill"></i> <strong>${stats.preservedCount}</strong> preserved</span>` : ""}${stats.bookmarkCount > 0 ? html`<span class="dashcam-stat-chip stat-chip-bookmarks"><i class="bi bi-bookmark-fill"></i> <strong>${stats.bookmarkCount}</strong> ${stats.bookmarkCount === 1 ? "bookmark" : "bookmarks"}</span>` : ""}</div>`
             }}
           </div>
           <div class="dashcam-header-controls">
@@ -831,11 +918,14 @@ export function RouteRecordings() {
             ` : ""}
           </div>
           <div class="dashcam-filter-group">
-            <button class="${() => `dashcam-filter-pill ${!state.showPreservedOnly ? "active" : ""}`}" type="button" @click="${() => { state.showPreservedOnly = false }}">
+            <button class="${() => `dashcam-filter-pill ${state.routeFilter === "all" ? "active" : ""}`}" type="button" @click="${() => { state.routeFilter = "all" }}">
               All Drives
             </button>
-            <button class="${() => `dashcam-filter-pill ${state.showPreservedOnly ? "active" : ""}`}" type="button" @click="${() => { state.showPreservedOnly = true }}">
+            <button class="${() => `dashcam-filter-pill ${state.routeFilter === "preserved" ? "active" : ""}`}" type="button" @click="${() => { state.routeFilter = "preserved" }}">
               <i class="bi bi-heart-fill"></i> Preserved
+            </button>
+            <button class="${() => `dashcam-filter-pill ${state.routeFilter === "bookmarks" ? "active" : ""}`}" type="button" @click="${() => { state.routeFilter = "bookmarks" }}">
+              <i class="bi bi-bookmark-fill"></i> Bookmarks
             </button>
           </div>
           <label class="dashcam-sort">
@@ -858,7 +948,8 @@ export function RouteRecordings() {
         </div>
 
         ${() => {
-          const view = buildRouteView(state.routes, { preservedOnly: state.showPreservedOnly, searchQuery: state.searchQuery, sortOrder: state.sortOrder })
+          if (state.routeFilter === "bookmarks") return BookmarkClips()
+          const view = buildRouteView(state.routes, { preservedOnly: state.routeFilter === "preserved", searchQuery: state.searchQuery, sortOrder: state.sortOrder })
           const groups = groupRoutesForView(view.visible, state.sortOrder)
           const renderKey = routeViewRenderKey(view.visible, state.sortOrder, state.viewMode)
           const hasActiveSearch = Boolean(state.searchQuery.trim())
@@ -904,6 +995,7 @@ export function RouteRecordings() {
                             <div class="dashcam-route-meta-pills">
                               <span class="meta-pill duration-pill"><i class="bi bi-clock"></i> ${formatApproxDuration(route.approxDurationSeconds)}</span>
                               <span class="meta-pill segments-pill"><i class="bi bi-collection-play"></i> ${route.segmentCount} seg</span>
+                              ${() => route.bookmarks?.length ? html`<span class="meta-pill bookmark-pill" title="Bookmarked clips in this drive"><i class="bi bi-bookmark-fill"></i> ${route.bookmarks.length}</span>` : ""}
                             </div>
                             <div class="dashcam-card-actions" @click="${event => event.stopPropagation()}">
                               <button class="btn-route-action btn-play" type="button" title="Play route" @click="${() => { state.selectedRoute = route }}">
@@ -939,6 +1031,7 @@ export function RouteRecordings() {
                               <span class="meta-pill duration-pill" title="Estimated duration"><i class="bi bi-clock"></i> ${formatApproxDuration(route.approxDurationSeconds)}</span>
                               <span class="meta-pill segments-pill" title="Segments recorded"><i class="bi bi-collection-play"></i> ${route.segmentCount} segment${route.segmentCount === 1 ? "" : "s"}</span>
                               ${() => route.is_preserved ? html`<span class="meta-pill preserved-pill" title="Preserved from deletion"><i class="bi bi-heart-fill"></i> Preserved</span>` : ""}
+                              ${() => route.bookmarks?.length ? html`<span class="meta-pill bookmark-pill" title="Bookmarked clips in this drive"><i class="bi bi-bookmark-fill"></i> ${bookmarkCountLabel(route)}</span>` : ""}
                               <span class="meta-pill id-pill" title="Route ID: ${route.name}"><i class="bi bi-hash"></i>${route.name.split("--").slice(1).join("--") || route.name}</span>
                             </div>
                           </div>
@@ -968,9 +1061,9 @@ export function RouteRecordings() {
 
         ${() => state.routes.length ? html`
           <footer class="dashcam-danger-zone">
-            <div class="dashcam-danger-copy"><strong>Delete local routes</strong><span>Keep preserved routes, or remove everything.</span></div>
+            <div class="dashcam-danger-copy"><strong>Delete local routes</strong><span>Keep preserved and bookmarked routes, or remove everything.</span></div>
             <div class="dashcam-danger-actions">
-              <button class="delete-all-button delete-non-preserved-button" type="button" @click="${() => { state.deleteMode = "non-preserved" }}" disabled="${() => state.isDeletingAll || state.routes.every(route => route.is_preserved) || false}">${() => state.isDeletingAll ? "Deleting…" : "Delete Non-Preserved"}</button>
+              <button class="delete-all-button delete-non-preserved-button" type="button" @click="${() => { state.deleteMode = "non-preserved" }}" disabled="${() => state.isDeletingAll || state.routes.every(route => route.is_preserved || route.bookmarks?.length) || false}">${() => state.isDeletingAll ? "Deleting…" : "Delete Non-Preserved"}</button>
               <button class="delete-all-button" type="button" @click="${() => { state.deleteMode = "all" }}" disabled="${() => state.isDeletingAll || false}">${() => state.isDeletingAll ? "Deleting…" : "Delete All Including Preserved"}</button>
             </div>
           </footer>` : ""}
@@ -979,7 +1072,7 @@ export function RouteRecordings() {
         title: state.deleteMode === "all" ? "Delete All Routes, Including Preserved?" : "Delete All Non-Preserved Routes?",
         message: state.deleteMode === "all"
           ? "This permanently deletes every local route, including preserved routes. This action cannot be undone."
-          : "This permanently deletes every non-preserved local route. Preserved routes will be kept.",
+          : "This permanently deletes every local route that isn't preserved or bookmarked. Preserved and bookmarked routes will be kept.",
         onConfirm: () => deleteAllRoutes(state.deleteMode === "all"),
         onCancel: () => { state.deleteMode = null },
         confirmText: state.deleteMode === "all" ? "Delete Everything" : "Delete Non-Preserved",
