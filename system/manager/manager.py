@@ -39,6 +39,7 @@ from openpilot.system.hardware.hw import Paths
 
 _MANAGER_CORE_IMPORT_DONE = time.monotonic()
 
+from openpilot.starpilot.common.connect_hosts import migrate_connect_server
 from openpilot.starpilot.common.starpilot_functions import starpilot_boot_functions, install_starpilot, uninstall_starpilot
 from openpilot.starpilot.common.starpilot_variables import (
   LEGACY_STARPILOT_PARAM_RENAMES,
@@ -1026,6 +1027,8 @@ def manager_init() -> None:
   migrate_cluster_offset_default(params, params_cache)
   migrate_traffic_mode_smooth_defaults(params, params_cache)
   migrate_traffic_follow_default(params, params_cache)
+  # Must run before unset params are filled with defaults, or ConnectServer would always default to Konik
+  migrate_connect_server(params)
   last_timing = _log_boot_timing("manager_init", "starpilot_migrations", manager_init_start, last_timing)
 
   # set unset params to their default value

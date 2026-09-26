@@ -28,6 +28,9 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.latcontrol_torque import KP
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.starpilot.common.connect_hosts import (
+  CONNECT_SERVER_COMMA, CONNECT_SERVER_CUSTOM, CONNECT_SERVER_KONIK, CONNECT_SERVER_PARAM_KEYS, get_connect_server,
+)
 from openpilot.starpilot.common.model_versions import is_tinygrad_model_version
 from openpilot.starpilot.common.lateral_delay import full_lateral_delay
 from openpilot.starpilot.common.lateral_only_experimental import lateral_only_experimental_available
@@ -167,6 +170,9 @@ HD_PATH = _FP_CACHE_ROOT / "use_HD"
 KONIK_LOGS_PATH = _FP_DATA_ROOT / "media/0/realdata_konik"
 KONIK_PATH = _FP_CACHE_ROOT / "use_konik"
 
+CUSTOM_SERVER_LOGS_PATH = _FP_DATA_ROOT / "media/0/realdata_custom"
+CUSTOM_SERVER_PATH = _FP_CACHE_ROOT / "use_custom_server"
+
 MAPS_PATH = _FP_DATA_ROOT / "media/0/osm/offline"
 
 NNFF_MODELS_PATH = Path(BASEDIR) / "starpilot/assets/nnff_models"
@@ -289,7 +295,7 @@ EXCLUDED_KEYS = {
   "UpdaterTargetBranch",
   "UserFavorites",
   "UptimeOffroad"
-}
+} | CONNECT_SERVER_PARAM_KEYS
 
 # Shared params handles for modules that import these from starpilot_variables.
 params = Params(return_defaults=True)
@@ -474,10 +480,12 @@ class StarPilotVariables:
 
     sync_reboot_marker(HD_PATH, toggle.use_higher_bitrate, self.params_raw)
 
-    toggle.use_konik_server = device_management
-    toggle.use_konik_server &= self.get_value("UseKonikServer")
+    connect_server = get_connect_server(self.params_raw) if device_management else CONNECT_SERVER_COMMA
+    toggle.use_konik_server = connect_server == CONNECT_SERVER_KONIK
+    toggle.use_custom_server = connect_server == CONNECT_SERVER_CUSTOM
 
     sync_reboot_marker(KONIK_PATH, toggle.use_konik_server, self.params_raw)
+    sync_reboot_marker(CUSTOM_SERVER_PATH, toggle.use_custom_server, self.params_raw)
 
     stock_colors_json = (STOCK_THEME_PATH / "colors/colors.json")
     self.stock_colors = json.loads(stock_colors_json.read_text()) if stock_colors_json.is_file() else {}

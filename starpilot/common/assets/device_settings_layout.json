@@ -4661,12 +4661,26 @@
         "requires_capability": "IsTiciOrTizi"
       },
       {
-        "key": "UseKonikServer",
-        "label": "Use Konik Server",
-        "description": "Upload driving data to \"stable.konik.ai\" instead of \"connect.comma.ai\".",
-        "picker_description": "Uploads driving data to the Konik server.",
-        "data_type": "bool",
-        "ui_type": "toggle",
+        "key": "ConnectServer",
+        "label": "Connect Server",
+        "description": "Where driving data is uploaded: \"connect.comma.ai\", \"stable.konik.ai\", or a custom server. Custom server URLs are set on the device under System Settings. \"Custom\" falls back to comma until they are.",
+        "picker_description": "Chooses the server driving data is uploaded to.",
+        "data_type": "int",
+        "ui_type": "dropdown",
+        "options": [
+          {
+            "value": 0,
+            "label": "Comma"
+          },
+          {
+            "value": 1,
+            "label": "Konik"
+          },
+          {
+            "value": 2,
+            "label": "Custom"
+          }
+        ],
         "parent_key": "DeviceManagement",
         "settings_tier": "simple"
       },

@@ -41,6 +41,10 @@ namespace Path {
       return "/data/media/0/realdata_konik/";
     }
 
+    if (std::filesystem::exists("/cache/use_custom_server")) {
+      return "/data/media/0/realdata_custom/";
+    }
+
     return "/data/media/0/realdata";
   }
 

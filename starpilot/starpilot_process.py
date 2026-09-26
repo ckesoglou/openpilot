@@ -32,7 +32,8 @@ from openpilot.starpilot.common.safe_mode import (
   restore_safe_mode,
   safe_mode_enabled,
 )
-from openpilot.starpilot.common.starpilot_utilities import ThreadManager, flash_panda, is_url_pingable, lock_doors, use_konik_server
+from openpilot.starpilot.common.connect_hosts import CONNECT_SERVER_COMMA, CONNECT_SERVER_KONIK, get_connect_server
+from openpilot.starpilot.common.starpilot_utilities import ThreadManager, flash_panda, is_url_pingable, lock_doors
 from openpilot.starpilot.common.starpilot_variables import ERROR_LOGS_PATH, StarPilotVariables
 from openpilot.starpilot.controls.starpilot_planner import StarPilotPlanner, serialize_starpilot_toggles
 from openpilot.starpilot.system.starpilot_stats import send_stats
@@ -164,9 +165,11 @@ def sync_drive_stats(params, session):
 
     params.put("ApiCache_DriveStats", stats)
 
+    # Custom servers don't count towards either total
+    minutes_key = {CONNECT_SERVER_COMMA: "openpilotMinutes", CONNECT_SERVER_KONIK: "KonikMinutes"}.get(get_connect_server())
     all_minutes = all_stats.get("minutes")
-    if isinstance(all_minutes, (int, float)):
-      params.put_int("KonikMinutes" if use_konik_server() else "openpilotMinutes", int(all_minutes))
+    if minutes_key is not None and isinstance(all_minutes, (int, float)):
+      params.put_int(minutes_key, int(all_minutes))
   except Exception as exception:
     print(f"Failed to sync drive stats: {exception}")
 
@@ -188,6 +191,7 @@ def get_dashboard_footage_paths():
     return [
       "/data/media/0/realdata_HD/",
       "/data/media/0/realdata_konik/",
+      "/data/media/0/realdata_custom/",
       str(Paths.log_root()),
     ]
 

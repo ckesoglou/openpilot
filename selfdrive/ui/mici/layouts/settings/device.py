@@ -1,13 +1,10 @@
 import os
 import pyray as rl
-from pathlib import Path
 from collections.abc import Callable
 
 from openpilot.common.basedir import BASEDIR
 from openpilot.common.params import Params
 from openpilot.common.time_helpers import system_time_valid
-from openpilot.system.hardware import PC
-from openpilot.system.hardware.hw import Paths
 from openpilot.system.ui.widgets.scroller import NavRawScrollPanel, NavScroller
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigCircleButton, BigParamControl
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigConfirmationDialog, BigMultiOptionDialog
@@ -21,7 +18,10 @@ from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.html_render import HtmlModal, HtmlRenderer
 from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
-from openpilot.starpilot.common.connect_server import prepare_konik_server_switch
+from openpilot.starpilot.common.connect_hosts import (
+  CONNECT_SERVER_COMMA, CONNECT_SERVER_CUSTOM, CONNECT_SERVER_KONIK, get_connect_server, get_custom_hosts,
+)
+from openpilot.starpilot.common.connect_server import ConnectServerSwitchError, switch_connect_server
 
 
 class ReviewTermsPage(TermsPage, NavScroller):
@@ -128,13 +128,15 @@ class DeviceInfoLayoutMici(Widget):
     self._serial_number_text_label.render()
 
 
-def _konik_toggle_path() -> Path:
-  return Path(Paths.comma_home()) / "starpilot" / "cache" / "use_konik" if PC else Path("/cache/use_konik")
-
-
 class ConnectServerBigButton(BigButton):
   _COMMA_OPTION = "comma connect"
   _KONIK_OPTION = "konik connect"
+  _CUSTOM_OPTION = "custom server"
+  _OPTION_SERVERS = {
+    _COMMA_OPTION: CONNECT_SERVER_COMMA,
+    _KONIK_OPTION: CONNECT_SERVER_KONIK,
+    _CUSTOM_OPTION: CONNECT_SERVER_CUSTOM,
+  }
 
   def __init__(self):
     self._params = Params()
@@ -145,24 +147,21 @@ class ConnectServerBigButton(BigButton):
     return 52
 
   def _selected_option(self) -> str:
-    return self._KONIK_OPTION if self._params.get_bool("UseKonikServer") else self._COMMA_OPTION
+    server = get_connect_server(self._params)
+    return next(option for option, option_server in self._OPTION_SERVERS.items() if option_server == server)
+
+  def _options(self) -> list[str]:
+    # Custom server URLs can't be entered on mici, so only offer it once they've been set elsewhere
+    if get_custom_hosts(self._params) is None:
+      return [self._COMMA_OPTION, self._KONIK_OPTION]
+    return list(self._OPTION_SERVERS)
 
   def _apply_selection(self, selection: str):
-    use_konik = selection == self._KONIK_OPTION
-    prepare_konik_server_switch(use_konik, self._params)
-
-    toggle_path = _konik_toggle_path()
-    toggle_path.parent.mkdir(parents=True, exist_ok=True)
-    if use_konik:
-      toggle_path.touch(exist_ok=True)
-    else:
-      try:
-        toggle_path.unlink(missing_ok=True)
-      except TypeError:
-        if toggle_path.exists():
-          toggle_path.unlink()
-
-    ui_state.params.put_bool("DoReboot", True)
+    try:
+      # Requests a reboot on success
+      switch_connect_server(self._OPTION_SERVERS[selection], self._params)
+    except ConnectServerSwitchError as error:
+      gui_app.push_widget(BigDialog("", str(error).lower()))
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     super()._handle_mouse_release(mouse_pos)
@@ -176,7 +175,7 @@ class ConnectServerBigButton(BigButton):
 
       gui_app.push_widget(BigConfirmationDialog("slide to\nreboot", self._reboot_icon, lambda: self._apply_selection(selection)))
 
-    dialog = BigMultiOptionDialog(options=[self._COMMA_OPTION, self._KONIK_OPTION], default=self._selected_option(), right_btn_callback=on_confirm)
+    dialog = BigMultiOptionDialog(options=self._options(), default=self._selected_option(), right_btn_callback=on_confirm)
     dialog_holder["dialog"] = dialog
     gui_app.push_widget(dialog)
 

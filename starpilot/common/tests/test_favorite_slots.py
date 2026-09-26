@@ -2,6 +2,7 @@ import json
 from typing import cast
 
 from openpilot.common.params import ParamKeyType, Params
+from openpilot.starpilot.common.connect_hosts import CONNECT_SERVER_PARAM_KEYS
 from openpilot.starpilot.common.favorite_slots import (
   FAVORITE_ACTION_ACCEL_COUNTER,
   FAVORITE_ACTION_DECEL_COUNTER,
@@ -127,6 +128,24 @@ def test_parked_only_personality_keys_are_never_exposed_or_mutated_as_favorites(
     assert slots[0]["key"] is None
     assert toggle_favorite_slot(0, typed_params, params_memory, eligible_keys={key}) is False
     assert params.get(key) == original
+
+
+def test_connect_server_keys_are_never_exposed_or_mutated_as_favorites():
+  # Switching servers needs switch_connect_server() and a reboot
+  options = build_favorite_slot_options(lambda _key: True, alpha_longitudinal_available=True)
+  assert CONNECT_SERVER_PARAM_KEYS.isdisjoint({option["key"] for option in options})
+
+  params = FakeParams()
+  typed_params = cast(Params, params)
+  params_memory = cast(Params, FakeParams())
+  params.types["ConnectServer"] = ParamKeyType.INT
+  params.put_int("ConnectServer", 0)
+  params.put(FAVORITE_SLOTS_PARAM, [{"enabled": True, "show_onroad": True, "key": "ConnectServer", "label": "Connect Server"}])
+
+  assert load_favorite_slots(typed_params, eligible_keys={"ConnectServer"})[0]["key"] is None
+  assert toggle_favorite_slot(0, typed_params, params_memory, eligible_keys={"ConnectServer"}) is False
+  assert execute_favorite_key("ConnectServer", typed_params, params_memory) is False
+  assert params.get("ConnectServer") == 0
 
 
 def test_parked_only_personality_keys_are_removed_without_a_param_store_even_when_eligible():

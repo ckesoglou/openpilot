@@ -159,6 +159,8 @@ from openpilot.starpilot.common.longitudinal_personality_profiles import (
   validate_personality_advanced_value,
   validate_personality_follow_value,
 )
+from openpilot.starpilot.common.connect_hosts import get_connect_server
+from openpilot.starpilot.common.connect_server import ConnectServerSwitchError, switch_connect_server
 from openpilot.starpilot.common.starpilot_utilities import delete_file, get_lock_status, run_cmd
 from openpilot.starpilot.common.starpilot_variables import ACTIVE_THEME_PATH, BUTTON_FUNCTIONS, ERROR_LOGS_PATH, EXCLUDED_KEYS, LEGACY_STARPILOT_PARAM_RENAMES, MAPS_PATH, MODELS_PATH, RESOURCES_REPO, SCREEN_RECORDINGS_PATH, STOCK_THEME_PATH, THEME_SAVE_PATH, TOGGLE_BACKUPS,\
                                                            default_ev_tuning_enabled, migrate_cancel_button_controls, update_starpilot_toggles
@@ -1353,6 +1355,7 @@ except TypeError:
   FOOTAGE_PATHS = [
     "/data/media/0/realdata_HD/",
     "/data/media/0/realdata_konik/",
+    "/data/media/0/realdata_custom/",
     str(Paths.log_root()),
   ]
 
@@ -1809,6 +1812,7 @@ _FACTORY_RESET_WIPE_PATHS = [
   "/data/media/0/realdata",
   "/data/media/0/realdata_HD",
   "/data/media/0/realdata_konik",
+  "/data/media/0/realdata_custom",
   "/data/models",
   "/data/toggle_backups",
   "/data/backups",
@@ -1816,6 +1820,7 @@ _FACTORY_RESET_WIPE_PATHS = [
   "/data/media/0/osm/offline",
   "/cache/use_HD",
   "/cache/use_konik",
+  "/cache/use_custom_server",
 ]
 
 _PLOTS_POLL_INTERVAL_S = 0.75
@@ -6259,6 +6264,24 @@ def setup(app):
           "updated": {FAVORITE_SLOTS_PARAM: slots},
         }), 200
 
+      if key == "ConnectServer":
+        # Excluded from the generic write path, which would skip the dongle ID and log root switch
+        try:
+          server = int(data["value"])
+        except (TypeError, ValueError):
+          return jsonify({"error": "ConnectServer must be 0 (comma), 1 (Konik) or 2 (custom)."}), 400
+        if server == get_connect_server(_params_raw):
+          return jsonify({"message": "Connect server unchanged.", "updated": {key: server}}), 200
+        try:
+          switch_connect_server(server, _params_raw)
+        except ConnectServerSwitchError as error:
+          return jsonify({"error": str(error)}), 409
+        update_starpilot_toggles()
+        return jsonify({
+          "message": "Connect server updated. The device will reboot.",
+          "updated": {key: server},
+        }), 200
+
       key = {
         "model": "Model",
         "modelversion": "ModelVersion",
@@ -6814,6 +6837,7 @@ def setup(app):
         result[key] = None
 
     result["TeslaCANWakeAvailable"] = supports_tesla_can_wake(params)
+    result["ConnectServer"] = get_connect_server(_params_raw)
     result["HasRadar"] = _get_has_radar()
     result["VehicleParked"] = _get_vehicle_parked()
     result["AlphaLongitudinalAvailable"] = _get_alpha_longitudinal_available()

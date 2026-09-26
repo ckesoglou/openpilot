@@ -11,7 +11,6 @@ import threading
 import time
 import zipfile
 
-from functools import cache
 from pathlib import Path
 
 from cereal import log, messaging
@@ -379,12 +378,6 @@ def update_json_file(path, data):
     os.fsync(file.fileno())
 
   os.replace(temp_path, path)
-
-
-@cache
-def use_konik_server():
-  # Prefer the persistent toggle over volatile cache files.
-  return Params().get_bool("UseKonikServer")
 
 
 def wait_for_no_driver(params, sm, door_checks=False, time_threshold=60):

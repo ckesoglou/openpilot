@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from openpilot.common.params import ParamKeyType, Params
+from openpilot.starpilot.common.connect_hosts import CONNECT_SERVER_PARAM_KEYS
 from openpilot.starpilot.common.longitudinal_personality_profiles import (
   PERSONALITY_PARKED_PARAM_KEYS,
   PERSONALITY_PROFILES_PARAM,
@@ -55,6 +56,8 @@ FAVORITE_ACTION_KEYS = {option["key"] for option in FAVORITE_ACTION_OPTIONS}
 FAVORITE_ACTION_LABELS = {option["key"]: option["label"] for option in FAVORITE_ACTION_OPTIONS}
 SETTINGS_CATALOG_PATH = Path(__file__).resolve().parent / "assets" / "device_settings_layout.json"
 PERSONALITY_FAVORITE_BLOCKED_KEYS = PERSONALITY_PARKED_PARAM_KEYS | {PERSONALITY_PROFILES_PARAM}
+# Switching servers needs switch_connect_server() and a reboot, so it can't be a one-tap favorite
+FAVORITE_BLOCKED_KEYS = PERSONALITY_FAVORITE_BLOCKED_KEYS | CONNECT_SERVER_PARAM_KEYS
 
 
 BLOCKED_ONROAD_KEYS = {
@@ -144,7 +147,7 @@ def build_favorite_slot_options(is_eligible_param: Callable[[str], bool], *,
 
   options = [dict(option) for option in FAVORITE_ACTION_OPTIONS]
   for key, param_data in catalog_map.items():
-    if param_data.get("galaxy_only") or key in PERSONALITY_FAVORITE_BLOCKED_KEYS:
+    if param_data.get("galaxy_only") or key in FAVORITE_BLOCKED_KEYS:
       continue
 
     ui_type = str(param_data.get("ui_type") or "")
@@ -403,7 +406,7 @@ def is_favorite_action_key(key: str | None) -> bool:
 
 
 def favorite_key_is_valid(params: Params, key: str | None, eligible_keys: Iterable[str] | None = None) -> bool:
-  if not key or key in PERSONALITY_FAVORITE_BLOCKED_KEYS:
+  if not key or key in FAVORITE_BLOCKED_KEYS:
     return False
 
   if is_favorite_action_key(key):
@@ -441,7 +444,7 @@ def normalize_favorite_slots(raw_slots: Any, params: Params | None = None,
     if key and is_favorite_action_key(key):
       pass
     elif key and (
-      key in PERSONALITY_FAVORITE_BLOCKED_KEYS or
+      key in FAVORITE_BLOCKED_KEYS or
       (eligible is not None and key not in eligible) or
       (params is not None and not favorite_key_is_valid(params, key, eligible_keys=eligible))
     ):

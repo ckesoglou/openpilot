@@ -57,7 +57,11 @@ from openpilot.selfdrive.ui.layouts.settings.starpilot.aethergrid import (
   TOGGLE_ROW_HEIGHT,
 )
 from openpilot.starpilot.common import param_profiles
-from openpilot.starpilot.common.connect_server import prepare_konik_server_switch
+from openpilot.starpilot.common.connect_hosts import (
+  API_SCHEMES, ATHENA_SCHEMES, CONNECT_SCHEMES, CONNECT_SERVER_COMMA, CONNECT_SERVER_CUSTOM, CONNECT_SERVER_KONIK,
+  CONNECT_SERVER_PARAM_KEYS, ConnectHosts, get_connect_hosts, get_connect_server, get_custom_hosts, is_valid_host, normalize_host,
+)
+from openpilot.starpilot.common.connect_server import ConnectServerSwitchError, switch_connect_server
 from openpilot.starpilot.common.starpilot_variables import EXCLUDED_KEYS as STARPILOT_EXCLUDED_KEYS, TOGGLE_BACKUPS, update_starpilot_toggles
 
 LEGACY_STARPILOT_PARAM_RENAMES = {
@@ -82,7 +86,7 @@ EXCLUDED_KEYS = {
   "SpeedLimits",
   "SpeedLimitsFiltered",
   "UpdaterAvailableBranches",
-}
+} | CONNECT_SERVER_PARAM_KEYS
 
 REPORT_CATEGORIES = [
   tr_noop("Acceleration feels harsh or jerky"),
@@ -252,10 +256,10 @@ class SystemSettingsManagerView(PanelManagerView):
         "set_state": lambda v: self._controller._params.put_bool("StandbyMode", v),
       },
       {
-        "title": tr("Use Konik Server"),
+        "title": tr("Connect Server"),
         "subtitle": "",
-        "get_state": self._controller._get_konik_state,
-        "set_state": self._controller._on_konik_toggle,
+        "get_value": self._controller._connect_server_label,
+        "on_click": self._controller._on_connect_server_click,
       },
       {
         "title": tr("Debug Mode"),
@@ -986,40 +990,102 @@ class StarPilotSystemLayout(_SettingsPage):
       if hasattr(HARDWARE, 'set_screen_brightness'):
         HARDWARE.set_screen_brightness(int(val))
 
-  def _get_konik_state(self):
-    if Path("/data/not_vetted").exists():
-      return True
-    return self._params.get_bool("UseKonikServer")
+  def _connect_server_options(self) -> dict[int, str]:
+    return {
+      CONNECT_SERVER_COMMA: tr("Comma"),
+      CONNECT_SERVER_KONIK: tr("Konik"),
+      CONNECT_SERVER_CUSTOM: tr("Custom"),
+    }
 
-  def _on_konik_toggle(self, state):
-    target = tr("Konik") if state else tr("Comma")
+  def _connect_server_label(self) -> str:
+    server = get_connect_server(self._params)
+    if server == CONNECT_SERVER_CUSTOM:
+      return get_connect_hosts(self._params).connect_hostname
+    return self._connect_server_options()[server]
 
+  def _on_connect_server_click(self):
+    if self._params.get_bool("IsOnroad"):
+      gui_app.push_widget(alert_dialog(tr("Can't change the Connect server while driving.")))
+      return
+
+    options = self._connect_server_options()
+    current = get_connect_server(self._params)
+
+    def on_select(res):
+      if res != DialogResult.CONFIRM or not dialog.selection:
+        return
+      server = next(server for server, label in options.items() if label == dialog.selection)
+      if server == CONNECT_SERVER_CUSTOM:
+        # Picking Custom again edits the current URLs
+        self._edit_custom_server_hosts()
+      elif server != current:
+        self._confirm_connect_server_switch(server, options[server])
+
+    dialog = MultiOptionDialog(tr("Connect Server"), list(options.values()), options[current], callback=on_select)
+    gui_app.push_widget(dialog)
+
+  def _edit_custom_server_hosts(self):
+    # (param, title, example, allowed schemes, required)
+    fields = [
+      ("CustomApiHost", tr("API URL"), "https://api.example.com", API_SCHEMES, True),
+      ("CustomAthenaHost", tr("Athena URL"), "wss://athena.example.com", ATHENA_SCHEMES, True),
+      ("CustomConnectHost", tr("Connect URL (optional)"), "https://connect.example.com", CONNECT_SCHEMES, False),
+    ]
+    values: dict[str, str] = {}
+
+    def prompt(index: int, text: str | None = None):
+      if index == len(fields):
+        self._apply_custom_server_hosts(values)
+        return
+
+      key, title, example, schemes, required = fields[index]
+
+      def on_done(res):
+        if res != DialogResult.CONFIRM:
+          return
+        value = normalize_host(self._keyboard.text, schemes[0])
+        if not value and not required:
+          values[key] = ""
+          prompt(index + 1)
+        elif is_valid_host(value, schemes):
+          values[key] = value
+          prompt(index + 1)
+        else:
+          gui_app.push_widget(ConfirmDialog(
+            tr("\"{}\" isn't a valid URL. It should look like {}").format(self._keyboard.text, example),
+            tr("Edit"), tr("Cancel"),
+            callback=lambda r: prompt(index, self._keyboard.text) if r == DialogResult.CONFIRM else None,
+          ))
+
+      self._keyboard.reset(min_text_size=1 if required else 0)
+      self._keyboard.set_title(title, example)
+      self._keyboard.set_text(text if text is not None else normalize_host(self._params.get(key), schemes[0]))
+      self._keyboard.set_callback(on_done)
+      gui_app.push_widget(self._keyboard)
+
+    prompt(0)
+
+  def _apply_custom_server_hosts(self, values: dict[str, str]):
+    api = values["CustomApiHost"]
+    hosts = ConnectHosts(api, values["CustomAthenaHost"], values["CustomConnectHost"] or api)
+    if get_connect_server(self._params) == CONNECT_SERVER_CUSTOM and get_custom_hosts(self._params) == hosts:
+      return
+
+    self._confirm_connect_server_switch(CONNECT_SERVER_CUSTOM, api, custom_hosts=hosts)
+
+  def _confirm_connect_server_switch(self, server: int, target: str, custom_hosts: ConnectHosts | None = None):
     def on_confirm(res):
       if res != DialogResult.CONFIRM:
-        self._params.put_bool("UseKonikServer", not state)
         return
-      prepare_konik_server_switch(state, self._params)
       try:
-        cache_path = Path("/cache/use_konik")
-        if state:
-          cache_path.parent.mkdir(parents=True, exist_ok=True)
-          cache_path.touch()
-        else:
-          if cache_path.exists():
-            cache_path.unlink()
-      except OSError:
-        pass
-      if ui_state.started:
-        gui_app.push_widget(
-          ConfirmDialog(
-            tr("Reboot required. Reboot now?"), tr("Reboot"), tr("Cancel"),
-            callback=lambda res: HARDWARE.reboot() if res == DialogResult.CONFIRM else None
-          )
-        )
+        # Requests a reboot on success
+        switch_connect_server(server, self._params, custom_hosts=custom_hosts)
+      except ConnectServerSwitchError as error:
+        gui_app.push_widget(alert_dialog(tr(str(error))))
 
     gui_app.push_widget(
       ConfirmDialog(
-        tr("Switch Connect endpoint to {}?").format(target),
+        tr("Switch Connect endpoint to {}? The device will reboot.").format(target),
         tr("Switch"),
         tr("Cancel"),
         callback=on_confirm
@@ -1081,7 +1147,7 @@ class StarPilotSystemLayout(_SettingsPage):
     def _do_delete(res):
       if res == DialogResult.CONFIRM:
         def _task():
-          drive_paths = ["/data/media/0/realdata/", "/data/media/0/realdata_HD/", "/data/media/0/realdata_konik/"]
+          drive_paths = ["/data/media/0/realdata/", "/data/media/0/realdata_HD/", "/data/media/0/realdata_konik/", "/data/media/0/realdata_custom/"]
           for path in drive_paths:
             p = Path(path)
             if p.exists():

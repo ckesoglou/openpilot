@@ -6,6 +6,7 @@ import pytest
 from PIL import Image
 
 from openpilot.starpilot.common import connect_server as cs
+from openpilot.starpilot.common.connect_hosts import CONNECT_SERVER_COMMA, CONNECT_SERVER_CUSTOM, CONNECT_SERVER_KONIK, CONNECT_SERVER_PARAM_KEYS
 from openpilot.starpilot.common import starpilot_functions as sf
 
 
@@ -24,6 +25,9 @@ class FakeParams:
 
   def put_bool(self, key, value):
     self.values[key] = b"1" if value else b"0"
+
+  def put_int(self, key, value):
+    self.values[key] = int(value)
 
   def remove(self, key):
     self.values.pop(key, None)
@@ -272,72 +276,189 @@ def test_automatic_update_requests_guarded_reboot(monkeypatch):
   assert params.get("DoReboot") == b"1"
 
 
-def test_sync_konik_dongle_id_preserves_stock_id_before_switching(monkeypatch, tmp_path):
+def test_sync_connect_dongle_id_preserves_stock_id_before_switching(monkeypatch, tmp_path):
   monkeypatch.setattr(cs.Paths, "persist_root", staticmethod(lambda: str(tmp_path)))
-  monkeypatch.setattr(cs, "use_konik_server", lambda: True)
+  monkeypatch.setattr(cs, "get_connect_server", lambda params=None: CONNECT_SERVER_KONIK)
   monkeypatch.setattr(cs, "register", lambda **kwargs: "konik-dongle")
 
   params = FakeParams({"DongleId": "stock-dongle"})
 
-  cs.sync_konik_dongle_id(params)
+  cs.sync_connect_dongle_id(params)
 
   assert params.get("StockDongleId") == "stock-dongle"
   assert params.get("KonikDongleId") == "konik-dongle"
   assert params.get("DongleId") == "konik-dongle"
 
 
-def test_sync_konik_dongle_id_restores_stock_id_from_persist(monkeypatch, tmp_path):
+def test_sync_connect_dongle_id_restores_stock_id_from_persist(monkeypatch, tmp_path):
   persist_root = tmp_path / "persist"
   persisted_dongle_id_path = persist_root / "comma" / "dongle_id"
   persisted_dongle_id_path.parent.mkdir(parents=True, exist_ok=True)
   persisted_dongle_id_path.write_text("stock-dongle")
 
   monkeypatch.setattr(cs.Paths, "persist_root", staticmethod(lambda: str(persist_root)))
-  monkeypatch.setattr(cs, "use_konik_server", lambda: False)
+  monkeypatch.setattr(cs, "get_connect_server", lambda params=None: CONNECT_SERVER_COMMA)
 
   params = FakeParams({
     "DongleId": "konik-dongle",
     "KonikDongleId": "konik-dongle",
   })
 
-  cs.sync_konik_dongle_id(params)
+  cs.sync_connect_dongle_id(params)
 
   assert params.get("StockDongleId") == "stock-dongle"
   assert params.get("DongleId") == "stock-dongle"
 
 
-def test_sync_konik_dongle_id_skips_missing_stock_backup(monkeypatch, tmp_path):
+def test_sync_connect_dongle_id_skips_missing_stock_backup(monkeypatch, tmp_path):
   monkeypatch.setattr(cs.Paths, "persist_root", staticmethod(lambda: str(tmp_path)))
-  monkeypatch.setattr(cs, "use_konik_server", lambda: False)
+  monkeypatch.setattr(cs, "get_connect_server", lambda params=None: CONNECT_SERVER_COMMA)
 
   params = FakeParams({
     "DongleId": "konik-dongle",
     "KonikDongleId": "konik-dongle",
   })
 
-  cs.sync_konik_dongle_id(params)
+  cs.sync_connect_dongle_id(params)
 
   assert params.get("DongleId") == "konik-dongle"
   assert params.get("StockDongleId") is None
 
 
-def test_prepare_konik_server_switch_clears_cached_konik_id():
+def test_sync_connect_dongle_id_registers_custom_server_separately(monkeypatch, tmp_path):
+  monkeypatch.setattr(cs.Paths, "persist_root", staticmethod(lambda: str(tmp_path)))
+  monkeypatch.setattr(cs, "get_connect_server", lambda params=None: CONNECT_SERVER_CUSTOM)
+  monkeypatch.setattr(cs, "register", lambda **kwargs: "custom-dongle")
+
+  params = FakeParams({
+    "DongleId": "konik-dongle",
+    "KonikDongleId": "konik-dongle",
+    "StockDongleId": "stock-dongle",
+  })
+
+  cs.sync_connect_dongle_id(params)
+
+  assert params.get("CustomDongleId") == "custom-dongle"
+  assert params.get("DongleId") == "custom-dongle"
+  assert params.get("KonikDongleId") == "konik-dongle"
+  assert params.get("StockDongleId") == "stock-dongle"
+
+
+def test_sync_connect_dongle_id_restores_stock_id_from_custom(monkeypatch, tmp_path):
+  monkeypatch.setattr(cs.Paths, "persist_root", staticmethod(lambda: str(tmp_path)))
+  monkeypatch.setattr(cs, "get_connect_server", lambda params=None: CONNECT_SERVER_COMMA)
+
+  params = FakeParams({
+    "DongleId": "custom-dongle",
+    "CustomDongleId": "custom-dongle",
+    "StockDongleId": "stock-dongle",
+  })
+
+  cs.sync_connect_dongle_id(params)
+
+  assert params.get("DongleId") == "stock-dongle"
+
+
+def test_prepare_connect_server_switch_clears_cached_konik_id():
   params = FakeParams({"KonikDongleId": "konik-dongle"})
   params_cache = FakeParams({"KonikDongleId": "konik-dongle"})
 
-  cs.prepare_konik_server_switch(True, params, params_cache)
+  cs.prepare_connect_server_switch(CONNECT_SERVER_KONIK, params, params_cache)
 
+  assert params.get("ConnectServer") == CONNECT_SERVER_KONIK
   assert params.get("UseKonikServer") == b"1"
   assert params.get("KonikDongleId") is None
   assert params_cache.get("KonikDongleId") is None
 
 
-def test_prepare_konik_server_switch_clears_cached_stock_id():
+def test_prepare_connect_server_switch_clears_cached_custom_id():
+  params = FakeParams({"CustomDongleId": "custom-dongle", "KonikDongleId": "konik-dongle"})
+  params_cache = FakeParams({"CustomDongleId": "custom-dongle"})
+
+  cs.prepare_connect_server_switch(CONNECT_SERVER_CUSTOM, params, params_cache)
+
+  assert params.get("ConnectServer") == CONNECT_SERVER_CUSTOM
+  assert params.get("UseKonikServer") == b"0"
+  assert params.get("CustomDongleId") is None
+  assert params_cache.get("CustomDongleId") is None
+  assert params.get("KonikDongleId") == "konik-dongle"
+
+
+def test_prepare_connect_server_switch_clears_cached_stock_id():
   params = FakeParams({"DongleId": "konik-dongle"})
   params_cache = FakeParams({"DongleId": "konik-dongle"})
 
-  cs.prepare_konik_server_switch(False, params, params_cache)
+  cs.prepare_connect_server_switch(CONNECT_SERVER_COMMA, params, params_cache)
 
+  assert params.get("ConnectServer") == CONNECT_SERVER_COMMA
   assert params.get("UseKonikServer") == b"0"
   assert params.get("DongleId") is None
   assert params_cache.get("DongleId") is None
+
+
+@pytest.fixture
+def log_root_markers(monkeypatch, tmp_path):
+  markers = {CONNECT_SERVER_KONIK: tmp_path / "use_konik", CONNECT_SERVER_CUSTOM: tmp_path / "use_custom_server"}
+  monkeypatch.setattr(cs, "LOG_ROOT_MARKERS", markers)
+  return markers
+
+
+CUSTOM_HOSTS = cs.ConnectHosts("https://api.example.com", "wss://athena.example.com", "https://connect.example.com")
+
+
+def test_switch_connect_server_to_custom_writes_hosts_and_requests_reboot(log_root_markers):
+  params = FakeParams({"CustomDongleId": "old-custom-dongle", "IsOnroad": b"0"})
+
+  cs.switch_connect_server(CONNECT_SERVER_CUSTOM, params, custom_hosts=CUSTOM_HOSTS, params_cache=FakeParams())
+
+  assert params.get("ConnectServer") == CONNECT_SERVER_CUSTOM
+  assert params.get("CustomApiHost") == "https://api.example.com"
+  assert params.get("CustomAthenaHost") == "wss://athena.example.com"
+  assert params.get("CustomConnectHost") == "https://connect.example.com"
+  assert params.get("CustomDongleId") is None
+  assert params.get("DoReboot") == b"1"
+  assert log_root_markers[CONNECT_SERVER_CUSTOM].is_file()
+  assert not log_root_markers[CONNECT_SERVER_KONIK].exists()
+
+
+def test_switch_connect_server_stores_blank_connect_host_when_it_matches_api(log_root_markers):
+  params = FakeParams()
+  hosts = cs.ConnectHosts("https://api.example.com", "wss://athena.example.com", "https://api.example.com")
+
+  cs.switch_connect_server(CONNECT_SERVER_CUSTOM, params, custom_hosts=hosts, params_cache=FakeParams())
+
+  assert params.get("CustomConnectHost") == ""
+
+
+def test_switch_connect_server_moves_log_root_marker(log_root_markers):
+  log_root_markers[CONNECT_SERVER_KONIK].touch()
+  params = FakeParams({"ConnectServer": CONNECT_SERVER_KONIK})
+
+  cs.switch_connect_server(CONNECT_SERVER_COMMA, params, params_cache=FakeParams())
+
+  assert params.get("ConnectServer") == CONNECT_SERVER_COMMA
+  assert not log_root_markers[CONNECT_SERVER_KONIK].exists()
+  assert not log_root_markers[CONNECT_SERVER_CUSTOM].exists()
+
+
+@pytest.mark.parametrize("server, values, custom_hosts", [
+  (CONNECT_SERVER_KONIK, {"IsOnroad": b"1"}, None),
+  (7, {}, None),
+  (CONNECT_SERVER_CUSTOM, {}, None),
+  (CONNECT_SERVER_KONIK, {}, CUSTOM_HOSTS),
+  (CONNECT_SERVER_CUSTOM, {}, cs.ConnectHosts("https://api.example.com", "https://athena.example.com", "")),
+])
+def test_switch_connect_server_rejects_invalid_switches(log_root_markers, server, values, custom_hosts):
+  params = FakeParams({"ConnectServer": CONNECT_SERVER_COMMA, **values})
+  before = dict(params.values)
+
+  with pytest.raises(cs.ConnectServerSwitchError):
+    cs.switch_connect_server(server, params, custom_hosts=custom_hosts, params_cache=FakeParams())
+
+  assert params.values == before
+  assert not any(marker.exists() for marker in log_root_markers.values())
+
+
+def test_every_dongle_id_is_protected_from_generic_writers():
+  dongle_id_keys = {"DongleId", "StockDongleId", *cs.ALTERNATE_DONGLE_ID_KEYS.values()}
+  assert dongle_id_keys <= CONNECT_SERVER_PARAM_KEYS

@@ -22,7 +22,8 @@ def normalize_api_host(host: str | None) -> str:
   if not parsed.scheme:
     parsed = urlparse(f"https://{host}")
 
-  normalized = urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), "", "", "", "")).rstrip("/")
+  # Keep the path so self-hosted servers behind a prefix (https://example.com/api) still work
+  normalized = urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), "", "", "")).rstrip("/")
   if normalized in COMMA_API_HOST_ALIASES:
     return DEFAULT_API_HOST
   return normalized

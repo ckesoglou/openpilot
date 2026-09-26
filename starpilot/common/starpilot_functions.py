@@ -18,7 +18,7 @@ from openpilot.system.version import get_build_metadata
 
 from openpilot.starpilot.assets.theme_manager import ThemeManager
 from openpilot.starpilot.common.starpilot_backups import backup_starpilot
-from openpilot.starpilot.common.connect_server import sync_konik_dongle_id
+from openpilot.starpilot.common.connect_server import sync_connect_dongle_id
 from openpilot.starpilot.common.maps_catalog import normalize_schedule_value, sanitize_selected_locations_csv
 from openpilot.starpilot.common.maps_download_progress import (
   MAPS_STORAGE_CACHE_PARAM,
@@ -31,7 +31,7 @@ from openpilot.starpilot.common.maps_download_progress import (
 from openpilot.starpilot.common.theme_asset_names import find_matching_theme_asset_file
 from openpilot.starpilot.common.starpilot_utilities import get_starpilot_api_info, is_url_pingable, run_cmd
 from openpilot.starpilot.common.starpilot_variables import (
-  ERROR_LOGS_PATH, STARPILOT_API, HD_LOGS_PATH, KONIK_LOGS_PATH, MAPS_PATH, THEME_SAVE_PATH,
+  ERROR_LOGS_PATH, STARPILOT_API, HD_LOGS_PATH, KONIK_LOGS_PATH, CUSTOM_SERVER_LOGS_PATH, MAPS_PATH, THEME_SAVE_PATH,
   StarPilotVariables, get_starpilot_toggles
 )
 
@@ -86,7 +86,7 @@ def starpilot_boot_functions(build_metadata, params):
   StarPilotVariables()
   ThemeManager(params, params_memory, boot_run=True).update_active_theme(time_validated=system_time_valid(), starpilot_toggles=get_starpilot_toggles(), boot_run=True)
 
-  sync_konik_dongle_id(params)
+  sync_connect_dongle_id(params)
 
   def boot_thread():
     while not system_time_valid():
@@ -103,6 +103,7 @@ def install_starpilot(build_metadata, params):
     ERROR_LOGS_PATH,
     HD_LOGS_PATH,
     KONIK_LOGS_PATH,
+    CUSTOM_SERVER_LOGS_PATH,
     MAPS_PATH,
     THEME_SAVE_PATH
   ]

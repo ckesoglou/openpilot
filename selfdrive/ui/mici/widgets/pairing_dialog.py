@@ -11,22 +11,25 @@ from openpilot.system.ui.widgets.nav_widget import NavWidget
 from openpilot.system.ui.lib.application import FontWeight, gui_app
 from openpilot.system.ui.widgets.label import UnifiedLabel
 
-
-def use_konik_server(params: Params | None = None) -> bool:
-  params = params or Params()
-  return params.get_bool("UseKonikServer")
+from openpilot.starpilot.common.connect_hosts import CONNECT_SERVER_CUSTOM, CONNECT_SERVER_KONIK, get_connect_hosts, get_connect_server
 
 
 def get_pairing_host(params: Params | None = None) -> str:
-  return "stable.konik.ai" if use_konik_server(params) else "connect.comma.ai"
+  return get_connect_hosts(params).connect_hostname
 
 
 def get_pairing_service_label(params: Params | None = None) -> str:
-  return "konik connect" if use_konik_server(params) else "comma connect"
+  server = get_connect_server(params)
+  if server == CONNECT_SERVER_CUSTOM:
+    return get_pairing_host(params)
+  return "konik connect" if server == CONNECT_SERVER_KONIK else "comma connect"
 
 
 def get_pairing_backend_name(params: Params | None = None) -> str:
-  return "Konik" if use_konik_server(params) else "comma.ai"
+  server = get_connect_server(params)
+  if server == CONNECT_SERVER_CUSTOM:
+    return get_pairing_host(params)
+  return "Konik" if server == CONNECT_SERVER_KONIK else "comma.ai"
 
 
 class PairingDialog(NavWidget):
@@ -51,7 +54,7 @@ class PairingDialog(NavWidget):
     except Exception as e:
       cloudlog.warning(f"Failed to get pairing token: {e}")
       token = ""
-    return f"https://{get_pairing_host(self._params)}/?pair={token}"
+    return f"{get_connect_hosts(self._params).connect}/?pair={token}"
 
   def _generate_qr_code(self) -> None:
     try:

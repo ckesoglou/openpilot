@@ -14,6 +14,8 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets.button import IconButton
 from openpilot.selfdrive.ui.ui_state import ui_state
 
+from openpilot.starpilot.common.connect_hosts import CONNECT_SERVER_COMMA, get_connect_hosts, get_connect_server
+
 
 class PairingDialog(Widget):
   """Dialog for device pairing with QR code."""
@@ -35,7 +37,7 @@ class PairingDialog(Widget):
     except Exception:
       cloudlog.exception("Failed to get pairing token")
       token = ""
-    return f"https://connect.comma.ai/?pair={token}"
+    return f"{get_connect_hosts(self.params).connect}/?pair={token}"
 
   def _generate_qr_code(self) -> None:
     try:
@@ -113,11 +115,19 @@ class PairingDialog(Widget):
     return -1
 
   def _render_instructions(self, rect: rl.Rectangle) -> None:
-    instructions = [
-      tr("Go to https://connect.comma.ai on your phone"),
-      tr("Click \"add new device\" and scan the QR code on the right"),
-      tr("Bookmark connect.comma.ai to your home screen to use it like an app"),
-    ]
+    if get_connect_server(self.params) == CONNECT_SERVER_COMMA:
+      instructions = [
+        tr("Go to https://connect.comma.ai on your phone"),
+        tr("Click \"add new device\" and scan the QR code on the right"),
+        tr("Bookmark connect.comma.ai to your home screen to use it like an app"),
+      ]
+    else:
+      hosts = get_connect_hosts(self.params)
+      instructions = [
+        tr("Go to {} on your phone").format(hosts.connect),
+        tr("Click \"add new device\" and scan the QR code on the right"),
+        tr("Bookmark {} to your home screen to use it like an app").format(hosts.connect_hostname),
+      ]
 
     font = gui_app.font(FontWeight.BOLD)
     y = rect.y

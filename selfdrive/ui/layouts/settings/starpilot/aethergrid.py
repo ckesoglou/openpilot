@@ -728,7 +728,18 @@ class PanelManagerView(AetherInteractiveMixin, Widget):
 
   # ── convenience builders ──────────────────────────────────
 
-  def _make_toggle_tile(self, d: dict) -> ToggleTile:
+  def _make_toggle_tile(self, d: dict) -> AetherTile:
+    if "get_value" in d:
+      value_cls = RowValueTile if self.PANEL_STYLE.toggle_row_mode else ValueTile
+      return value_cls(
+        title=d["title"],
+        get_value=d["get_value"],
+        on_click=d["on_click"],
+        bg_color=self.PANEL_STYLE.accent,
+        is_enabled=d.get("is_enabled"),
+        desc=d.get("subtitle", ""),
+      )
+
     cls = RowToggleTile if self.PANEL_STYLE.toggle_row_mode else ToggleTile
     return cls(
       title=d["title"],
@@ -4203,6 +4214,39 @@ class RowToggleTile(ToggleTile):
         rl.draw_ring(rl.Vector2(led_cx, led_cy), led_radius_inner - 2, led_radius_inner + 1, 0, 360, 24, rl.Color(accent.r, accent.g, accent.b, 22))
 
     self._render_luxury_grid_layout(rect, self.title, status_text, active, status_color_override, draw_led)
+
+
+class RowValueTile(AetherTile):
+  """Row-style tile showing a setting's current value that opens a picker when tapped."""
+
+  def __init__(
+    self,
+    title: str,
+    get_value: Callable[[], str],
+    on_click: Callable,
+    bg_color: rl.Color | str | None = None,
+    is_enabled: Callable[[], bool] | None = None,
+    desc: str = "",
+  ):
+    super().__init__(surface_color=bg_color, on_click=on_click)
+    self.title = title
+    self.desc = desc
+    self.get_value = get_value
+    self.set_enabled(is_enabled or (lambda: True))
+    self._font = gui_app.font(FontWeight.MEDIUM)
+    self._font_desc = gui_app.font(FontWeight.MEDIUM)
+    self._active_color = self.surface_color
+    self._disabled_color = rl.Color(75, 75, 75, 255)
+
+  def _render(self, rect: rl.Rectangle):
+    def draw_chevron(rx, ry, rw, rh, content_pad, accent):
+      half = rh * 0.08
+      cx = rx + rw - content_pad - half
+      cy = ry + rh / 2
+      rl.draw_line_ex(rl.Vector2(cx - half, cy - half * 1.6), rl.Vector2(cx + half, cy), 4, accent)
+      rl.draw_line_ex(rl.Vector2(cx + half, cy), rl.Vector2(cx - half, cy + half * 1.6), 4, accent)
+
+    self._render_luxury_grid_layout(rect, self.title, self.get_value(), True, None, draw_chevron)
 
 
 class ValueTile(AetherTile):

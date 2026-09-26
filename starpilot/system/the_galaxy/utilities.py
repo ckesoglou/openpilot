@@ -2800,7 +2800,7 @@ def _storage_category(path):
   path_text = str(path)
   if "realdata_HD" in path_text:
     return "highResolution"
-  if "realdata_konik" in path_text:
+  if "realdata_konik" in path_text or "realdata_custom" in path_text:
     return "alternate"
   return "standard"
 

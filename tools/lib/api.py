@@ -1,24 +1,27 @@
 import os
 import requests
 
-from openpilot.common.params import Params
 from openpilot.tools.lib.auth_config import DEFAULT_API_HOST, KONIK_API_HOST, normalize_api_host
 
 
-def _use_konik_server():
+def _configured_api_host() -> str:
+  # Same resolution as the device (comma, Konik or custom), falling back to comma where params aren't available
   try:
-    return Params().get_bool("UseKonikServer")
+    from openpilot.starpilot.common.connect_hosts import get_connect_hosts
+    return get_connect_hosts().api
   except Exception:
-    return False
+    return DEFAULT_API_HOST
 
 
-API_HOST = normalize_api_host(os.getenv('API_HOST', KONIK_API_HOST if _use_konik_server() else DEFAULT_API_HOST))
+API_HOST = normalize_api_host(os.getenv('API_HOST', _configured_api_host()))
 
 
 def route_api_hosts() -> list[str]:
   if os.getenv("API_HOST"):
     return [API_HOST]
-  return [DEFAULT_API_HOST, KONIK_API_HOST]
+  preset_hosts = [DEFAULT_API_HOST, KONIK_API_HOST]
+  # A custom server goes first, since a 401 from an earlier host stops the lookup
+  return preset_hosts if API_HOST in preset_hosts else [API_HOST, *preset_hosts]
 
 # TODO: this should be merged into common.api
 

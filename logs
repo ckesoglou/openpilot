@@ -34,11 +34,12 @@ import requests
 import zstandard
 
 from cereal import log
-from openpilot.tools.lib.auth_config import DEFAULT_API_HOST, KONIK_API_HOST, get_token, normalize_api_host
+from openpilot.tools.lib.api import route_api_hosts
+from openpilot.tools.lib.auth_config import DEFAULT_API_HOST, get_token, normalize_api_host
 
 
 API_HOST = normalize_api_host(os.getenv("COMMA_API_HOST") or os.getenv("API_HOST") or DEFAULT_API_HOST)
-API_HOSTS = [API_HOST] if os.getenv("COMMA_API_HOST") or os.getenv("API_HOST") else [DEFAULT_API_HOST, KONIK_API_HOST]
+API_HOSTS = [API_HOST] if os.getenv("COMMA_API_HOST") or os.getenv("API_HOST") else route_api_hosts()
 ROUTE_ID_RE = re.compile(r"([0-9a-f]{16})/([^/]+)")
 
 

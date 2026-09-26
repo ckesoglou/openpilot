@@ -32,7 +32,6 @@ Examples::
 """
 
 import argparse
-import os
 import pprint
 import sys
 import webbrowser
@@ -43,19 +42,9 @@ from urllib.parse import parse_qs, urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from openpilot.common.params import Params
-from openpilot.tools.lib.api import APIError, CommaApi, UnauthorizedError
+from openpilot.tools.lib.api import API_HOST, APIError, CommaApi, UnauthorizedError
 from openpilot.tools.lib.auth_config import DEFAULT_API_HOST, KONIK_API_HOST, get_token, normalize_api_host, set_token
 
-
-def _use_konik_server():
-  try:
-    return Params().get_bool("UseKonikServer")
-  except Exception:
-    return False
-
-
-API_HOST = normalize_api_host(os.getenv('API_HOST', KONIK_API_HOST if _use_konik_server() else DEFAULT_API_HOST))
 PORT = 3000
 
 

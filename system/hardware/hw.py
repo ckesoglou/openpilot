@@ -21,6 +21,8 @@ class Paths:
       return '/data/media/0/realdata_HD/'
     elif Path("/cache/use_konik").is_file():
       return '/data/media/0/realdata_konik/'
+    elif Path("/cache/use_custom_server").is_file():
+      return '/data/media/0/realdata_custom/'
     else:
       return '/data/media/0/realdata/'
 
